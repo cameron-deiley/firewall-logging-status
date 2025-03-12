@@ -34,48 +34,6 @@ def get_all_folders(directory):
     return [folder.name for folder in Path(directory).iterdir() if folder.is_dir()]
 the_clients = get_all_folders(client_path)
 
-def manage_failover_firewalls(client_path):
-    """
-    Detects and updates firewall failover pairs for each client.
-    Returns latest failover firewall data.
-    """
-
-    failover_data = {}
-    detected_failovers = {}
-
-    # Load existing failover data if JSON exists
-    if failover_json_path.exists():
-        with open(failover_json_path, "r") as file:
-            failover_data = json.load(file)
-
-    # Scan client folders for failover firewall settings
-    for client_folder in client_path.iterdir():
-        if not client_folder.is_dir():
-            continue  # Skip non-folder items
-
-        ini_file = client_folder / "nDiscovery.ini"  # Example: Each client has an .ini file
-        if ini_file.exists():
-            with open(ini_file, "r") as file:
-                for line in file:
-                    if "Failover_FW=" in line:
-                        failover_match = re.search(r"\|(.*?)\((.*?)\)\|", line.strip())  # Extract values inside |FW1(FW2)|
-                        if failover_match:
-                            primary_fw, failover_fw = failover_match.groups()
-                            detected_failovers[client_folder.name] = [primary_fw, failover_fw]
-
-    # Check for changes and update JSON if necessary
-    if detected_failovers != failover_data:
-        with open(failover_json_path, "w") as file:
-            json.dump(detected_failovers, file, indent=4)
-        print("Firewall failover data updated!")
-
-    else:
-        print("No changes detected in failover firewall pairs.")
-
-    return detected_failovers
-
-
-
 def check_fw_levels():
     print("Script has started running...\n")
     results = {}
