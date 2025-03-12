@@ -9,7 +9,7 @@ import json
 client_path = Path('D:/Clients')
 client_name_exceptions_file = Path('D:\Temp\Analysts\Julian\Script_Source\ClientExclusions.txt')
 local_output_dir = Path("D:/Temp/Analysts/Cam/Threat Engineering/FW Script Outputs")
-failover_json_path = Path("D:\Temp\Analysts\Cam\Threat Engineering\firewall_failovers.json")
+failover_json_path = Path("D:/Temp/Analysts/Cam/Threat Engineering/firewall_failovers.json")
 
 # Define constants
 the_folder = "Input"
