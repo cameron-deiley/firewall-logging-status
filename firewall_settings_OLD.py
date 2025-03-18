@@ -10,11 +10,11 @@ client_path = Path('D:/Clients')
 client_name_exceptions_file = Path('D:\Temp\Analysts\Julian\Script_Source\ClientExclusions.txt')
 local_output_dir = Path("D:/Temp/Analysts/Cam/Threat Engineering/FW Script Outputs")
 
-
 # Define constants
-the_folder = "Input"
-folder_date = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
+default_folder_date = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
+current_date = datetime.now.strftime("%Y%m%d")
 traffic_summary_table = "TrafficSummary"
+the_folder = "Input"
 
 client_name_exceptions = []
 def import_client_exceptions(exceptions_file):
@@ -27,19 +27,12 @@ def import_client_exceptions(exceptions_file):
                     client_name_exceptions.append(line_corrected)
 import_client_exceptions(client_name_exceptions_file)
 
-def get_all_folders(directory):
-    """
-    Returns a list of folder names in the given directory.
-    """
-    return [folder.name for folder in Path(directory).iterdir() if folder.is_dir()]
-the_clients = get_all_folders(client_path)
-
-def check_fw_levels():
+def check_ALL_fw_logging_levels():
     print("Script has started running...\n")
     results = {}
 
     # Generate a timestamp and path for the output file
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
+    timestamp = datetime.now().strftime("%Y/%m/%d_%H:%M")
     output_file = local_output_dir / f"FW_settings_script_{timestamp}.txt"
 
     # Ensure output directory exists
@@ -58,6 +51,10 @@ def check_fw_levels():
                 print(f"Skipping excluded folder: {client_folder.name}")
                 file.write(f"Skipping excluded folder: {client_folder.name}\n")
                 continue  # Move to the next folder
+
+            if client_folder.name == "RepublicofPalau":
+                folder_date = current_date
+            else: folder_date = default_folder_date
 
             client = client_folder.name  # Fix: Use current folder name directly
             folder_loc = Path(client_path) / client / "Source" / folder_date / the_folder
@@ -127,7 +124,7 @@ def check_fw_levels():
 
                             else:
                                 results[db_file.name] = ["No Matching Condition"]
-                                file.write(f"{db_file.name}: Review firewall logging! No traffic seen! \n")
+                                file.write(f"{db_file.name}: No traffic in file!\n")
                                 print(f"No matching conditions found for {db_file.name}")
 
                             cursor.close()
@@ -146,4 +143,4 @@ def check_fw_levels():
 
     print("\n Script has finished running! All client folders have been processed.")
 
-check_fw_levels()
+check_ALL_fw_logging_levels()
