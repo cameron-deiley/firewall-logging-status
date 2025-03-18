@@ -4,7 +4,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 
 # Define paths
-failover_txt_file = Path("D:/Temp/Analysts/Cam/Threat Engineering/FW Settings/firewall-logging-status/firewall_failovers.txt")
+failover_txt_file = Path("D:/Temp/Analysts/Cam/Threat Engineering/firewall_failovers.txt")
 client_path = Path("D:/Clients")
 
 # Define folder date (yesterday)

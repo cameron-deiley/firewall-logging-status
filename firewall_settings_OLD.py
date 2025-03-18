@@ -9,7 +9,7 @@ import json
 client_path = Path('D:/Clients')
 client_name_exceptions_file = Path('D:\Temp\Analysts\Julian\Script_Source\ClientExclusions.txt')
 local_output_dir = Path("D:/Temp/Analysts/Cam/Threat Engineering/FW Script Outputs")
-failover_json_path = Path("D:/Temp/Analysts/Cam/Threat Engineering/firewall_failovers.json")
+
 
 # Define constants
 the_folder = "Input"
@@ -73,10 +73,8 @@ def check_fw_levels():
                                "GUEST", "PCI", "REMOTE", "SCADA", "SCHOOLS", "SEWERPLANT", 
                                "STUDENT", "SYSMON"]
             regex_fw_pattern = "|".join(map(re.escape, custom_fw_names))
-            patterns = [
-                r"^\d{4}-\d{2}-\d{2}-\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}-Summary-firewall\.mdb$",
-                fr"^\d{{4}}-\d{{2}}-\d{{2}}-({regex_fw_pattern})-Summary-firewall\.mdb$"
-            ]
+            patterns = [r"^\d{4}-\d{2}-\d{2}-\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}-Summary-firewall\.mdb$",
+                        fr"^\d{{4}}-\d{{2}}-\d{{2}}-({regex_fw_pattern})-Summary-firewall\.mdb$"]
 
             file.write(f"\nProcessing: {folder_loc}\n")
 
@@ -87,7 +85,6 @@ def check_fw_levels():
                         found_mdb_file = True
                         db_path = folder_loc / db_file
                         
-
                         try:
                             print(f"Attempting to connect to: {db_file}")
                             conn = pyodbc.connect(rf"DRIVER={{Microsoft Access Driver (*.mdb, *.accdb)}};DBQ={db_path};")
