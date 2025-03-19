@@ -12,7 +12,7 @@ local_output_dir = Path("D:/Temp/Analysts/Cam/Threat Engineering/FW Script Outpu
 
 # Define constants
 default_folder_date = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
-current_date = datetime.now.strftime("%Y%m%d")
+current_date = datetime.now().strftime("%Y%m%d")
 traffic_summary_table = "TrafficSummary"
 the_folder = "Input"
 
@@ -52,9 +52,7 @@ def check_ALL_fw_logging_levels():
                 file.write(f"Skipping excluded folder: {client_folder.name}\n")
                 continue  # Move to the next folder
 
-            if client_folder.name == "RepublicofPalau":
-                folder_date = current_date
-            else: folder_date = default_folder_date
+            folder_date = current_date if client_folder.name == "RepublicofPalau" else default_folder_date
 
             client = client_folder.name  # Fix: Use current folder name directly
             folder_loc = Path(client_path) / client / "Source" / folder_date / the_folder
