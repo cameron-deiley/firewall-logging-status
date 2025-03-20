@@ -50,7 +50,7 @@ def check_ALL_fw_logging_levels():
 
     with output_file.open("w", encoding="utf-8") as file:
         file.write(f"Firewall Settings Search Results - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-        file.write(f"Checking FW logging for traffic direction, size, allowed/denied...\n")
+        file.write(f"Checking FW logging status for {default_folder_date}\n")
         file.write("=" * 50 + "\n")
 
         for client in clients_folder.iterdir():
@@ -80,18 +80,33 @@ def check_ALL_fw_logging_levels():
             patterns = [r"^\d{4}-\d{2}-\d{2}-\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}-Summary-firewall\.mdb$",
                         fr"^\d{{4}}-\d{{2}}-\d{{2}}-({regex_fw_pattern})-Summary-firewall\.mdb$"]
 
-            file.write(f"\nProcessing: {folder_loc}\n")
+            file.write(f"\nProcessing: {client}\n")
 
             found_mdb_file = False
             if folder_loc.exists():  # Fix: Ensure folder exists before iterating
                 for db_file in folder_loc.iterdir():
-                    failover_match = re.search(r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})", db_file.name)
-                    if failover_match:
-                        firewall_ip = failover_match.group(1)
-                        if firewall_ip in failover_firewalls:
-                            with output_file.open("a", encoding="utf-8") as file:
-                                print(f"Skipping failover firewall: {firewall_ip}")
-                                file.write(f"Skipping failover firewall: {firewall_ip}")
+                    db_file_str = str(db_file)
+
+                    # Match IP first -> FW name if no IP is found
+                    fw_ip_pattern = re.search(r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})", db_file_str)
+                    fw_name_pattern = re.search(fr"({regex_fw_pattern})", db_file_str)
+
+                    # Determine the appropriate match to use
+                    if fw_ip_pattern:
+                        zero_padded_ip = fw_ip_pattern.group(1)
+                        non_zero_padded_ip = ".".join(str(int(octet)) for octet in zero_padded_ip.split("."))  # Remove leading zeros
+                    elif fw_name_pattern:
+                        non_zero_padded_ip = fw_name_pattern.group(1)  # Use FW name as is
+                    else:
+                        non_zero_padded_ip = db_file_str  # Default to full file path if no match  # Default to full file path if no match
+                    
+                    # failover_match = re.search(r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})", db_file.name)
+                    # if failover_match:
+                    #     firewall_ip = failover_match.group(1)
+                    #     if firewall_ip in failover_firewalls:
+                    #         with output_file.open("a", encoding="utf-8") as file:
+                    #             print(f"Skipping failover firewall: {firewall_ip}")
+                    #             file.write(f"Skipping failover firewall: {firewall_ip}")
                     if any(re.search(pattern, db_file.name, re.IGNORECASE) for pattern in patterns):
                         found_mdb_file = True
                         db_path = folder_loc / db_file
@@ -99,7 +114,7 @@ def check_ALL_fw_logging_levels():
                             print(f"Attempting to connect to: {db_file}")
                             conn = pyodbc.connect(rf"DRIVER={{Microsoft Access Driver (*.mdb, *.accdb)}};DBQ={db_path};")
                             cursor = conn.cursor()
-                            print(f"Successfully connected to {folder_loc}")
+                            print(f"Successfully connected to {db_file}")
                             query = f"""
                                 SELECT 'Inbound Traffic' FROM {traffic_summary_table} WHERE Direction = 'I'
                                 UNION SELECT 'Outbound Traffic' FROM {traffic_summary_table} WHERE Direction = 'O'
@@ -107,28 +122,28 @@ def check_ALL_fw_logging_levels():
                                 UNION SELECT 'Allowed Traffic' FROM {traffic_summary_table} WHERE Allowed = 'A'
                                 UNION SELECT 'Denied Traffic' FROM {traffic_summary_table} WHERE Allowed = 'D'
                             """
-                            print(f"Executing query on {folder_loc}...")
+                            print(f"Executing query on {db_file}...")
                             cursor.execute(query)
                             matches = cursor.fetchall()
                             
                             if matches:
                                 conditions = [match[0] for match in matches]
                                 results[db_file.name] = conditions
-                                print(f"Conditions found for {db_file.name}: {', '.join(conditions)}")
+                                print(f"Conditions found for {non_zero_padded_ip}: {', '.join(conditions)}")
                                 missing_conditions = []
                                 expected_conditions = ["Traffic Size", "Inbound Traffic", "Outbound Traffic", "Allowed Traffic", "Denied Traffic"]
                                 for condition in expected_conditions:
                                     if condition not in conditions:
                                         missing_conditions.append(condition)
                                 if missing_conditions:
-                                    file.write(f"{db_file.name}: Missing Conditions: {', '.join(missing_conditions)}\n")
+                                    file.write(f"{non_zero_padded_ip}: Missing Conditions: {', '.join(missing_conditions)}\n")
                                 else:
-                                    file.write(f"{db_file.name}: All expected logging conditions met!\n")
+                                    file.write(f"{non_zero_padded_ip}: All expected logging conditions met!\n")
 
                             else:
                                 results[db_file.name] = ["No Matching Condition"]
-                                file.write(f"{db_file.name}: No traffic in file!\n")
-                                print(f"No matching conditions found for {db_file.name}")
+                                file.write(f"{non_zero_padded_ip}: No traffic in file!\n")
+                                print(f"No matching conditions found for {non_zero_padded_ip}")
 
                             cursor.close()
                             conn.close()
@@ -142,7 +157,7 @@ def check_ALL_fw_logging_levels():
 
             if not found_mdb_file:
                 print(f"No .mdb files found for {client}")
-                file.write(f"No .mdb files found for {client}\n")
+                file.write(f"No .mdb files found!\n")
 
     print("\n Script has finished running! All client folders have been processed.")
 
