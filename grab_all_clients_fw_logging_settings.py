@@ -50,6 +50,7 @@ def load_excluded_clients(exceptions_file_path):
 def check_ALL_fw_logging_levels():
     print("Script has started running...\n")
     results = {}
+    printed_clients = set()
 
     # Load client exclusions
     client_name_exceptions = load_excluded_clients(client_name_exceptions_file)
@@ -57,22 +58,22 @@ def check_ALL_fw_logging_levels():
     # Load failover pairs
     failover_pairs = {}
     if failover_data_file.exists():
-        with failover_data_file.open("r", encoding="utf-8") as f:
-            failover_pairs = json.load(f)
-    print(failover_pairs)
+        with failover_data_file.open("r", encoding="utf-8") as file:
+            failover_pairs = json.load(file)
+    #print(failover_pairs)
 
     # Bidirectional lookup for failover pairs
     failover_lookup = {}
-    for primary, failover in failover_pairs.items():
-        failover_lookup[primary] = failover
-        failover_lookup[failover] = primary
+    for client, (primary, secondary) in failover_pairs.items():
+        failover_lookup[primary] = secondary
+        failover_lookup[secondary] = primary
 
     # Prepare output
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
     output_file = local_output_dir / f"FW_settings_script_{timestamp}.txt"
     local_output_dir.mkdir(parents=True, exist_ok=True)
 
-    with output_file.open("w", encoding="utf-8") as file:
+    with output_file.open("w", encoding="utf-8", buffering=1) as file:
         file.write(f"Firewall Settings Search Results - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
         file.write(f"Checking FW logging status for {default_folder_date}\n")
         file.write("=" * 50 + "\n")
@@ -82,7 +83,7 @@ def check_ALL_fw_logging_levels():
                 continue
 
             if client_folder.name in client_name_exceptions:
-                print(f"Skipping excluded folder: {client_folder.name}")
+                print(f"Skipping excluded folder: {client_folder.name}\n")
                 file.write(f"\nSkipping excluded folder: {client_folder.name}\n")
                 continue
 
@@ -98,16 +99,18 @@ def check_ALL_fw_logging_levels():
                 continue
 
             # Start writing to output file
+            print(f"\nProcessing: {client}\n")
             file.write(f"\nProcessing: {client}\n")
 
             found_mdb_file = False
             for db_file in folder_loc.iterdir():
                 db_file_str = str(db_file)
-
+                found_mdb_file = True
+                db_path = folder_loc / db_file
+                
                 # Match IP first -> FW name if no IP is found
                 fw_ip_pattern = re.search(r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})", db_file_str)
                 fw_name_pattern = re.search(fr"({regex_fw_pattern})", db_file_str)
-
                 if fw_ip_pattern:
                     zero_padded_ip = fw_ip_pattern.group(1)
                     non_zero_padded_ip = ".".join(str(int(octet)) for octet in zero_padded_ip.split("."))
@@ -116,27 +119,22 @@ def check_ALL_fw_logging_levels():
                 else:
                     non_zero_padded_ip = db_file_str
 
-                # # Skip failover firewall IPs
-                # failover_match = re.search(r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})", db_file.name)
-                # if failover_match:
-                #     firewall_ip = ".".join(str(int(octet)) for octet in failover_match.group(1).split("."))
-                #     if firewall_ip in failover_firewalls:
-                #         print(f"Skipping failover firewall: {firewall_ip}")
-                #         file.write(f"Skipping failover firewall: {firewall_ip}\n")
-                #         continue
-
                 if not any(re.search(pattern, db_file.name, re.IGNORECASE) for pattern in mdb_filename_patterns):
                     continue
-
-                found_mdb_file = True
-                db_path = folder_loc / db_file
-
                 try:
-                    print(f"Attempting to connect to: {db_file}")
+                    print(f"Attempting to connect to {db_file.name}")
+                    
+                    # Write failover pairs for client if detected by other script
+                    if client in failover_pairs and client not in printed_clients:
+                        primary, secondary = failover_pairs[client]
+                        file.write(f"Failover Pair: {primary} <-> {secondary}\n")
+                        file.write("-" * 50 + "\n")
+                        printed_clients.add(client)
+                    
                     conn = pyodbc.connect(rf"DRIVER={{Microsoft Access Driver (*.mdb, *.accdb)}};DBQ={db_path};")
                     cursor = conn.cursor()
 
-                    print(f"Successfully connected to {db_file}")
+                    print(f"Successfully connected! ")
                     conditions_query = f"""
                         SELECT 'Inbound Traffic' FROM {traffic_summary_table} WHERE Direction = 'I'
                         UNION SELECT 'Outbound Traffic' FROM {traffic_summary_table} WHERE Direction = 'O'
@@ -145,21 +143,23 @@ def check_ALL_fw_logging_levels():
                         UNION SELECT 'Denied Traffic' FROM {traffic_summary_table} WHERE Allowed = 'D'
                     """
 
-                    print(f"Executing query on {db_file}...")
+                    print(f"Executing query!")
                     cursor.execute(conditions_query)
                     matches = cursor.fetchall()
 
+                    # Writing of missing conditions and failover designation to file
                     if matches:
                         conditions = [match[0] for match in matches]
                         results[db_file.name] = conditions
 
-                        print(f"Conditions found for {non_zero_padded_ip}: {', '.join(conditions)}")
+                        print(f"Conditions found: {', '.join(conditions)}")
                         missing_conditions = [cond for cond in expected_conditions if cond not in conditions]
 
                         if missing_conditions:
-                            file.write(f"{non_zero_padded_ip}: Missing Conditions - {', '.join(missing_conditions)}\n")
+                            file.write(f"{non_zero_padded_ip}: Missing Conditions: {', '.join(missing_conditions)}\n")
                         else:
                             file.write(f"{non_zero_padded_ip}: All expected logging conditions met!\n")
+
                     else:
                         results[db_file.name] = ["No Matching Condition"]
                         file.write(f"{non_zero_padded_ip}: No traffic in file!\n")

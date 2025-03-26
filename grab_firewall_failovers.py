@@ -41,14 +41,9 @@ for client_folder in client_path.iterdir():
                     primary_fw = pattern_match.group(1)
                     secondary_fw = pattern_match.group(2)
                     
-                    if primary_fw == "0.0.0.0" or secondary_fw == "0.0.0.0":
-                        failover_data[client_folder.name] = "No pairs detected"
-                    else:
-                        failover_data[client_folder.name] = f"{primary_fw}, {secondary_fw}"
-                        found_pair = True
-        
-        if not found_pair:
-            failover_data[client_folder.name] = "No pairs detected"
+                    if primary_fw != "0.0.0.0" and secondary_fw != "0.0.0.0":
+                        failover_data[client_folder.name] = (primary_fw, secondary_fw)
+                    break 
 
 # Save mappings to output file
 with failover_txt_file.open("w", encoding="utf-8") as output_file:
