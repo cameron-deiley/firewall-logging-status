@@ -59,13 +59,13 @@ def check_ALL_fw_logging_levels():
     if failover_data_file.exists():
         with failover_data_file.open("r", encoding="utf-8") as f:
             failover_pairs = json.load(f)
+    print(failover_pairs)
 
-    # Create normalized failover IPs to skip
-    failover_firewalls = {
-        ".".join(str(int(octet)) for octet in ip.split(".")) 
-        for ip in failover_pairs.values() 
-        if ip.lower() != "no pairs detected"
-    }
+    # Bidirectional lookup for failover pairs
+    failover_lookup = {}
+    for primary, failover in failover_pairs.items():
+        failover_lookup[primary] = failover
+        failover_lookup[failover] = primary
 
     # Prepare output
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
@@ -83,7 +83,7 @@ def check_ALL_fw_logging_levels():
 
             if client_folder.name in client_name_exceptions:
                 print(f"Skipping excluded folder: {client_folder.name}")
-                file.write(f"Skipping excluded folder: {client_folder.name}\n")
+                file.write(f"\nSkipping excluded folder: {client_folder.name}\n")
                 continue
 
             client = client_folder.name
@@ -97,6 +97,7 @@ def check_ALL_fw_logging_levels():
                 file.write("\n" + warning_msg + "\n")
                 continue
 
+            # Start writing to output file
             file.write(f"\nProcessing: {client}\n")
 
             found_mdb_file = False
@@ -115,14 +116,14 @@ def check_ALL_fw_logging_levels():
                 else:
                     non_zero_padded_ip = db_file_str
 
-                # Skip failover firewall IPs
-                failover_match = re.search(r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})", db_file.name)
-                if failover_match:
-                    firewall_ip = ".".join(str(int(octet)) for octet in failover_match.group(1).split("."))
-                    if firewall_ip in failover_firewalls:
-                        print(f"Skipping failover firewall: {firewall_ip}")
-                        file.write(f"Skipping failover firewall: {firewall_ip}\n")
-                        continue
+                # # Skip failover firewall IPs
+                # failover_match = re.search(r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})", db_file.name)
+                # if failover_match:
+                #     firewall_ip = ".".join(str(int(octet)) for octet in failover_match.group(1).split("."))
+                #     if firewall_ip in failover_firewalls:
+                #         print(f"Skipping failover firewall: {firewall_ip}")
+                #         file.write(f"Skipping failover firewall: {firewall_ip}\n")
+                #         continue
 
                 if not any(re.search(pattern, db_file.name, re.IGNORECASE) for pattern in mdb_filename_patterns):
                     continue
