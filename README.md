@@ -6,7 +6,8 @@
     1. Traffic direction (Inbound + Outbound)
     2. Traffic size
     3. Traffic permission (Are we logging both allowed/denied traffic?)
+    4. Lists out failover pairs for the client based on INI setting (FailoverFirewalls=)
+    5. Individual client lookup
   
 Features to come in the future:
-1. Tracking and verification of client's failover FW pairs
-2. Eliminating false positives due to outages by checking against the outage script
+1. Eliminating false positives due to outages by checking against the outage script
