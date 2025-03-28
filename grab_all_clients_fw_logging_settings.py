@@ -10,7 +10,6 @@ current_date = datetime.now().strftime("%Y%m%d")
 the_folder = "Input"
 traffic_summary_table = "TrafficSummary"
 timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
-outage_script_filename = f"{timestamp}_Syslog_Cloud_Outages.txt"
 ip_regex_pattern = re.compile(r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})")
 ip_regex_with_firewall = re.compile(rf"{ip_regex_pattern.pattern}\s+Firewall", re.IGNORECASE)
 
@@ -19,6 +18,7 @@ clients_folder = Path('D:/Clients')
 client_name_exceptions_file = Path('D:/Temp/Analysts/Julian/Script_Source/ClientExclusions.txt')
 local_output_dir = Path("D:/Temp/Analysts/Cam/Threat Engineering/FW Script Outputs")
 failover_data_file = Path("D:/Temp/Analysts/Cam/Threat Engineering/firewall_failovers.txt")
+outage_script_filename = f"{timestamp}_Syslog_Cloud_Outages.txt"
 outage_script_results_dir = Path("D:/Temp/Analysts/Julian/DataCollection/Outages")
 outage_script_file = outage_script_results_dir/outage_script_filename
 
@@ -45,8 +45,8 @@ def load_excluded_clients(exceptions_file_path):
     # Reads the exclusion file and returns a list of folder names to skip.
     excluded = []
     if exceptions_file_path.exists():
-        with exceptions_file_path.open('r', errors='ignore') as f:
-            for line in f:
+        with exceptions_file_path.open('r', errors='ignore') as file:
+            for line in file:
                 clean = line.strip()
                 if clean and clean not in excluded:
                     excluded.append(clean)
@@ -87,8 +87,10 @@ def check_ALL_fw_logging_levels(mode="all", specific_client=None):
     results = {}
     printed_clients = set()
 
-    # Load client exclusions
+    # Load client exclusions and outages
     client_name_exceptions = load_excluded_clients(client_name_exceptions_file)
+    client_outages = find_outages(outage_script_file)
+    print(client_outages)
 
     # Load failover pairs
     failover_pairs = {}
@@ -131,7 +133,7 @@ def check_ALL_fw_logging_levels(mode="all", specific_client=None):
             folder_date = current_date if client == "RepublicofPalau" else default_folder_date
             folder_loc = client_folder / "Source" / folder_date / the_folder
 
-            print(f"Checking client folder: {folder_loc}")
+            print(f"\nChecking client folder: {folder_loc}")
             if not folder_loc.exists():
                 warning_msg = f"Warning: Folder path '{folder_loc}' does not exist. Please investigate this!"
                 print(warning_msg.strip())
@@ -139,9 +141,14 @@ def check_ALL_fw_logging_levels(mode="all", specific_client=None):
                 continue
 
             # Start writing to output file
-            print(f"\nProcessing: {client}\n")
+            print(f"Processing: {client}\n")
             file.write(f"\nProcessing: {client}\n")
             file.write("-" * 50 + "\n")
+
+            if client in client_outages:
+                file.write(f"Outage Detected for {client}:\n")
+                for ip in client_outages[client]:
+                    file.write(f"   - {ip}\n")
 
             found_mdb_file = False
             for db_file in folder_loc.iterdir():
@@ -200,7 +207,7 @@ def check_ALL_fw_logging_levels(mode="all", specific_client=None):
                         else:
                             file.write(f"{non_zero_padded_ip}: All expected logging conditions met!\n")
 
-                        # if conditions == expected_conditions:
+                        
                     else:
                         results[db_file.name] = ["No Matching Condition"]
                         file.write(f"{non_zero_padded_ip}: No traffic in file!\n")
