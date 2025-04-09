@@ -85,7 +85,7 @@ def check_ALL_fw_logging_levels(mode="all", specific_client=None):
         failover_lookup[primary] = secondary
         failover_lookup[secondary] = primary
 
-    # Prepare output
+    # Prepare name for output file
     if specific_client:
         output_filename = f"FW_settings_script_{specific_client}_{timestamp}.txt"
     else:
@@ -93,6 +93,7 @@ def check_ALL_fw_logging_levels(mode="all", specific_client=None):
     output_file = local_output_dir / output_filename
     local_output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Everything after this point is with the output file open
     with output_file.open("w", encoding="utf-8", buffering=1) as file:
         file.write(f"Firewall Settings Search Results - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
         file.write(f"Checking FW logging status for {default_folder_date}\n")
@@ -132,24 +133,29 @@ def check_ALL_fw_logging_levels(mode="all", specific_client=None):
             file.write("-" * 50 + "\n")
 
             found_mdb_file = False
+
             for db_file in folder_loc.iterdir():
                 db_file_str = str(db_file)
+                
+                # Only proceed if filename matches our expected .mdb patterns
+                if not any(re.search(pattern, db_file.name, re.IGNORECASE) for pattern in mdb_filename_patterns):
+                    continue
+
+                # Now we're sure it's a valid firewall .mdb file
                 found_mdb_file = True
                 db_path = folder_loc / db_file
-                
+
                 # Match IP first -> FW name if no IP is found
                 fw_ip_pattern = re.search(r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})", db_file_str)
                 fw_name_pattern = re.search(fr"({regex_fw_pattern})", db_file_str)
                 if fw_ip_pattern:
-                    zero_padded_ip = fw_ip_pattern.group(1)
-                    non_zero_padded_ip = ".".join(str(int(octet)) for octet in zero_padded_ip.split("."))
+                    firewall_ip = fw_ip_pattern.group(1)
+                    non_zero_padded_ip = ".".join(str(int(octet)) for octet in firewall_ip.split("."))
                 elif fw_name_pattern:
                     non_zero_padded_ip = fw_name_pattern.group(1)
                 else:
                     non_zero_padded_ip = db_file_str
 
-                if not any(re.search(pattern, db_file.name, re.IGNORECASE) for pattern in mdb_filename_patterns):
-                    continue
                 try:
                     print(f"Attempting to connect to {db_file.name}")
                     
@@ -157,12 +163,17 @@ def check_ALL_fw_logging_levels(mode="all", specific_client=None):
                     cursor = conn.cursor()
 
                     print(f"Successfully connected! ")
+                    
                     conditions_query = f"""
                         SELECT 'Inbound Traffic' FROM {traffic_summary_table} WHERE Direction = 'I'
                         UNION SELECT 'Outbound Traffic' FROM {traffic_summary_table} WHERE Direction = 'O'
                         UNION SELECT 'Traffic Size' FROM {traffic_summary_table} WHERE Bytes >= 10
                         UNION SELECT 'Allowed Traffic' FROM {traffic_summary_table} WHERE Allowed = 'A'
                         UNION SELECT 'Denied Traffic' FROM {traffic_summary_table} WHERE Allowed = 'D'
+                    """
+
+                    firewalls_query = f"""
+                        
                     """
 
                     print(f"Executing query!")
