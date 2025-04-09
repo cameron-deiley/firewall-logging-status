@@ -9,9 +9,10 @@ default_folder_date = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
 current_date = datetime.now().strftime("%Y%m%d")
 the_folder = "Input"
 traffic_summary_table = "TrafficSummary"
+# FW_table 
 timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
 ip_regex_pattern = re.compile(r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})")
-ip_regex_with_firewall = re.compile(rf"{ip_regex_pattern.pattern}\s+Firewall", re.IGNORECASE)
+ip_with_firewall_pattern = re.compile(r"(\d{1,3}(?:\.\d{1,3}){3})\s+Firewall", re.IGNORECASE)
 
 # ========================== PATH CONFIG ==========================
 clients_folder = Path('D:/Clients')
@@ -39,6 +40,9 @@ expected_conditions = [
     "Traffic Size", "Inbound Traffic", "Outbound Traffic", 
     "Allowed Traffic", "Denied Traffic"
 ]
+# add url checking (regex match?) on syslog.txt files
+# firewall type (regex match?) on syslog.txt files
+# print IPs from FW tables in DB with queries
 
 # ========================== HELPER FUNCTIONS ==========================
 def load_excluded_clients(exceptions_file_path):
@@ -51,28 +55,6 @@ def load_excluded_clients(exceptions_file_path):
                 if clean and clean not in excluded:
                     excluded.append(clean)
     return excluded
-
-def find_outages(file_path):
-    client_outages = {}
-
-    if file_path.exists():
-        with file_path.open("r", encoding="utf-8", errors="ignore") as file:
-            lines = [line.strip() for line in file if line.strip()]
-            line_index = 0
-
-            while line_index < len(lines) - 1:
-                client_name = lines[line_index]
-                firewall_line = lines[line_index + 1]
-
-                match = ip_regex_with_firewall.search(firewall_line)
-                if match:
-                    firewall_ip = match.group(1)
-                    if client_name not in client_outages:
-                        client_outages[client_name] = []
-                    if firewall_ip not in client_outages[client_name]:
-                        client_outages[client_name].append(firewall_ip)
-                line_index += 2
-    return client_outages
 
 def get_mode_selection():
     mode = input("Check all clients or a specific one? (all/one): ").strip().lower()
@@ -89,8 +71,6 @@ def check_ALL_fw_logging_levels(mode="all", specific_client=None):
 
     # Load client exclusions and outages
     client_name_exceptions = load_excluded_clients(client_name_exceptions_file)
-    client_outages = find_outages(outage_script_file)
-    print(client_outages)
 
     # Load failover pairs
     failover_pairs = {}
@@ -143,12 +123,13 @@ def check_ALL_fw_logging_levels(mode="all", specific_client=None):
             # Start writing to output file
             print(f"Processing: {client}\n")
             file.write(f"\nProcessing: {client}\n")
-            file.write("-" * 50 + "\n")
 
-            if client in client_outages:
-                file.write(f"Outage Detected for {client}:\n")
-                for ip in client_outages[client]:
-                    file.write(f"   - {ip}\n")
+            # Write failover pairs for client if detected by other script
+            if client in failover_pairs and client not in printed_clients:
+                primary, secondary = failover_pairs[client]
+                file.write(f"Failover Pair: {primary} -> {secondary}\n")
+                printed_clients.add(client)
+            file.write("-" * 50 + "\n")
 
             found_mdb_file = False
             for db_file in folder_loc.iterdir():
@@ -171,12 +152,6 @@ def check_ALL_fw_logging_levels(mode="all", specific_client=None):
                     continue
                 try:
                     print(f"Attempting to connect to {db_file.name}")
-                    
-                    # Write failover pairs for client if detected by other script
-                    if client in failover_pairs and client not in printed_clients:
-                        primary, secondary = failover_pairs[client]
-                        file.write(f"Failover Pair: {primary} -> {secondary}\n")
-                        printed_clients.add(client)
                     
                     conn = pyodbc.connect(rf"DRIVER={{Microsoft Access Driver (*.mdb, *.accdb)}};DBQ={db_path};")
                     cursor = conn.cursor()
@@ -210,7 +185,7 @@ def check_ALL_fw_logging_levels(mode="all", specific_client=None):
                         
                     else:
                         results[db_file.name] = ["No Matching Condition"]
-                        file.write(f"{non_zero_padded_ip}: No traffic in file!\n")
+                        file.write(f"{non_zero_padded_ip}: No data in summary DB = potential outage! \n")
                         print(f"No matching conditions found for {non_zero_padded_ip}")
 
                     cursor.close()
