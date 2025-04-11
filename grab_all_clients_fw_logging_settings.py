@@ -4,24 +4,24 @@ from datetime import datetime, timedelta
 import re
 import json
 
-# ========================== VARIABLE CONFIG ==========================
-default_folder_date = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
-current_date = datetime.now().strftime("%Y%m%d")
-the_folder = "Input"
-traffic_summary_table = "TrafficSummary"
-# FW_table 
-timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
-ip_regex_pattern = re.compile(r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})")
-ip_with_firewall_pattern = re.compile(r"(\d{1,3}(?:\.\d{1,3}){3})\s+Firewall", re.IGNORECASE)
-
 # ========================== PATH CONFIG ==========================
 clients_folder = Path('D:/Clients')
 client_name_exceptions_file = Path('D:/Temp/Analysts/Julian/Script_Source/ClientExclusions.txt')
 local_output_dir = Path("D:/Temp/Analysts/Cam/Threat Engineering/FW Script Outputs")
 failover_data_file = Path("D:/Temp/Analysts/Cam/Threat Engineering/firewall_failovers.txt")
-outage_script_filename = f"{timestamp}_Syslog_Cloud_Outages.txt"
-outage_script_results_dir = Path("D:/Temp/Analysts/Julian/DataCollection/Outages")
-outage_script_file = outage_script_results_dir/outage_script_filename
+
+# ========================== VARIABLE CONFIG ==========================
+timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
+ip_regex_pattern = re.compile(r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})")
+default_folder_date = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
+current_date = datetime.now().strftime("%Y%m%d")
+the_folder = "Input"
+traffic_summary_table = "TrafficSummary"
+client = clients_folder.name
+folder_date = current_date if client == "RepublicofPalau" else default_folder_date
+folder_loc = None
+db_path = None
+output_file = None
 
 # ========================== FIREWALL MATCHING ==========================
 custom_fw_names = [
@@ -43,6 +43,7 @@ expected_conditions = [
 # add url checking (regex match?) on syslog.txt files
 # firewall type (regex match?) on syslog.txt files
 # print IPs from FW tables in DB with queries
+# add check if we are getting "debug" events (WE DO NOT WANT THOSE), tricky dependant on FW
 
 # ========================== HELPER FUNCTIONS ==========================
 def load_excluded_clients(exceptions_file_path):
@@ -63,34 +64,44 @@ def get_mode_selection():
         return mode, client
     return mode, None
 
+def get_folder_loc(client_folder, folder_date):
+    return client_folder/"Source"/folder_date/the_folder
+
+def get_db_path(folder_loc, mdb_file):
+    return folder_loc/mdb_file
+
+def get_output_file(specific_client, timestamp, local_output_dir):
+    if specific_client:
+        filename = f"FW_settings_script_{specific_client}_{timestamp}.txt"
+    else:
+        filename = f"FW_settings_script_all_{timestamp}.txt"
+    return local_output_dir / filename
+
 # ========================== MAIN FUNCTION ==========================
 def check_ALL_fw_logging_levels(mode="all", specific_client=None):
     print("Script has started running...\n")
     results = {}
     printed_clients = set()
+    failover_pairs = {}
+    failover_lookup = {}
 
-    # Load client exclusions and outages
+    # Load client exclusions
     client_name_exceptions = load_excluded_clients(client_name_exceptions_file)
 
     # Load failover pairs
-    failover_pairs = {}
     if failover_data_file.exists():
         with failover_data_file.open("r", encoding="utf-8") as file:
             failover_pairs = json.load(file)
     #print(failover_pairs)
 
     # Bidirectional lookup for failover pairs
-    failover_lookup = {}
     for client, (primary, secondary) in failover_pairs.items():
         failover_lookup[primary] = secondary
         failover_lookup[secondary] = primary
 
     # Prepare name for output file
-    if specific_client:
-        output_filename = f"FW_settings_script_{specific_client}_{timestamp}.txt"
-    else:
-        output_filename = f"FW_settings_script_all_{timestamp}.txt"
-    output_file = local_output_dir / output_filename
+    global output_file
+    output_file = get_output_file(specific_client, timestamp, local_output_dir)
     local_output_dir.mkdir(parents=True, exist_ok=True)
 
     # Everything after this point is with the output file open
@@ -102,17 +113,17 @@ def check_ALL_fw_logging_levels(mode="all", specific_client=None):
         for client_folder in clients_folder.iterdir():
             if not client_folder.is_dir():
                 continue
-            if specific_client and client_folder.name != specific_client:
-                continue
-
-            if client_folder.name in client_name_exceptions:
-                print(f"Skipping excluded folder: {client_folder.name}\n")
-                file.write(f"\nSkipping excluded folder: {client_folder.name}\n")
-                continue
-
+            
             client = client_folder.name
-            folder_date = current_date if client == "RepublicofPalau" else default_folder_date
-            folder_loc = client_folder / "Source" / folder_date / the_folder
+            if specific_client and client != specific_client:
+                continue
+            if client in client_name_exceptions:
+                print(f"Skipping excluded folder: {client}\n")
+                file.write(f"\nSkipping excluded folder: {client}\n")
+                continue
+            
+            global folder_loc
+            folder_loc = get_folder_loc(client_folder, folder_date)
 
             print(f"\nChecking client folder: {folder_loc}")
             if not folder_loc.exists():
@@ -125,7 +136,7 @@ def check_ALL_fw_logging_levels(mode="all", specific_client=None):
             print(f"Processing: {client}\n")
             file.write(f"\nProcessing: {client}\n")
 
-            # Write failover pairs for client if detected by other script
+            # Write failover pairs for client with results from failover script
             if client in failover_pairs and client not in printed_clients:
                 primary, secondary = failover_pairs[client]
                 file.write(f"Failover Pair: {primary} -> {secondary}\n")
@@ -133,35 +144,53 @@ def check_ALL_fw_logging_levels(mode="all", specific_client=None):
             file.write("-" * 50 + "\n")
 
             found_mdb_file = False
-
-            for db_file in folder_loc.iterdir():
-                db_file_str = str(db_file)
+            for mdb_file in folder_loc.iterdir():
+                db_file_str = str(mdb_file)
                 
                 # Only proceed if filename matches our expected .mdb patterns
-                if not any(re.search(pattern, db_file.name, re.IGNORECASE) for pattern in mdb_filename_patterns):
+                if not any(re.search(pattern, mdb_file.name, re.IGNORECASE) for pattern in mdb_filename_patterns):
                     continue
 
                 # Now we're sure it's a valid firewall .mdb file
                 found_mdb_file = True
-                db_path = folder_loc / db_file
+                global db_path
+                db_path = get_db_path(folder_loc, mdb_file)
 
                 # Match IP first -> FW name if no IP is found
-                fw_ip_pattern = re.search(r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})", db_file_str)
-                fw_name_pattern = re.search(fr"({regex_fw_pattern})", db_file_str)
-                if fw_ip_pattern:
-                    firewall_ip = fw_ip_pattern.group(1)
-                    non_zero_padded_ip = ".".join(str(int(octet)) for octet in firewall_ip.split("."))
-                elif fw_name_pattern:
-                    non_zero_padded_ip = fw_name_pattern.group(1)
+                raw_ip_match = re.search(r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})", db_file_str)
+                fw_name_match = re.search(fr"({regex_fw_pattern})", db_file_str)
+                
+                normalized_ip = None
+                custom_network_ips = [] # Populated only when matching FW name
+                ips_to_write = []       # List used for output writing
+
+                if raw_ip_match:
+                    normalized_ip = raw_ip_match.group(1)
+                    normalized_ip = ".".join(str(int(octet)) for octet in normalized_ip.split("."))
+                    firewall_identifier = normalized_ip  # Used downstream as the primary label
+                elif fw_name_match:
+                    fw_name = fw_name_match.group(1)
+                    firewall_identifier = fw_name
+                    try:
+                        conn = pyodbc.connect(rf"DRIVER={{Microsoft Access Driver (*.mdb, *.accdb)}};DBQ={db_path};")
+                        cursor = conn.cursor()
+                        cursor.execute("SELECT * FROM Firewalls WHERE Firewall = ?", (fw_name,))
+                        cursor.close()
+                        conn.close()
+                        custom_network_ips = [row[0] for row in cursor.fetchall()]
+                        print(custom_network_ips)
+                        ips_to_write = [
+                        ".".join(str(int(octet)) for octet in ip.split(".")) for ip in custom_network_ips
+                        ]
+                    except Exception as e:
+                        ips_to_write = [f"Error retrieving IPs: {str(e)}"]
                 else:
-                    non_zero_padded_ip = db_file_str
+                    firewall_identifier = db_file_str
 
                 try:
-                    print(f"Attempting to connect to {db_file.name}")
-                    
+                    print(f"Attempting to connect to {mdb_file.name}")
                     conn = pyodbc.connect(rf"DRIVER={{Microsoft Access Driver (*.mdb, *.accdb)}};DBQ={db_path};")
                     cursor = conn.cursor()
-
                     print(f"Successfully connected! ")
                     
                     conditions_query = f"""
@@ -172,40 +201,42 @@ def check_ALL_fw_logging_levels(mode="all", specific_client=None):
                         UNION SELECT 'Denied Traffic' FROM {traffic_summary_table} WHERE Allowed = 'D'
                     """
 
-                    firewalls_query = f"""
-                        
-                    """
-
                     print(f"Executing query!")
                     cursor.execute(conditions_query)
-                    matches = cursor.fetchall()
+                    conditions_found = cursor.fetchall()
+                    if conditions_found:
+                        conditions = [condition[0] for condition in conditions_found]
+                        results[mdb_file.name] = conditions
 
-                    # Writing of missing conditions to file
-                    if matches:
-                        conditions = [match[0] for match in matches]
-                        results[db_file.name] = conditions
-
+                        # Writing of missing conditions to file
                         print(f"Conditions found: {', '.join(conditions)}")
-                        missing_conditions = [cond for cond in expected_conditions if cond not in conditions]
-
+                        missing_conditions = [condition for condition in expected_conditions if condition not in conditions]
                         if missing_conditions:
-                            file.write(f"{non_zero_padded_ip}: Missing Conditions: {', '.join(missing_conditions)}\n")
+                            file.write(f"{firewall_identifier}: Missing Conditions: {', '.join(missing_conditions)}\n")
                         else:
-                            file.write(f"{non_zero_padded_ip}: All expected logging conditions met!\n")
-
+                            file.write(f"{firewall_identifier}: All expected logging conditions met!\n")
                         
-                    else:
-                        results[db_file.name] = ["No Matching Condition"]
-                        file.write(f"{non_zero_padded_ip}: No data in summary DB = potential outage! \n")
-                        print(f"No matching conditions found for {non_zero_padded_ip}")
+                        print(f"DEBUG - firewall_identifier: {firewall_identifier}")
+                        print(f"DEBUG - normalized_ip: {normalized_ip}")
+                        print(f"DEBUG - ips_to_write: {ips_to_write}")
 
+                        if ips_to_write and normalized_ip and normalized_ip in ips_to_write:
+                            print(f"    IPs in network: {', '.join(custom_network_ips)}\n")
+                            file.write(f"    IPs in network: {', '.join(custom_network_ips)}\n")
+
+                    else:
+                        results[mdb_file.name] = ["No Matching Condition"]
+                        file.write(f"{firewall_identifier}: No data in summary DB = potential outage! \n")
+                        print(f"No matching conditions found for {firewall_identifier}")
+
+                    
                     cursor.close()
                     conn.close()
-                    print(f"Closed connection to {db_file.name}")
+                    print(f"Closed connection to {mdb_file.name}")
 
                 except Exception as e:
-                    error_msg = f"Error processing {db_file.name}: {str(e)}"
-                    results[db_file.name] = [f"Error: {str(e)}"]
+                    error_msg = f"Error processing {mdb_file.name}: {str(e)}"
+                    results[mdb_file.name] = [f"Error: {str(e)}"]
                     file.write(f"{error_msg}\n")
                     print(error_msg)
 
