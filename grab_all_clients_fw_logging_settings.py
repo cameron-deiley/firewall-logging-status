@@ -3,6 +3,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 import re
 import json
+import logging
 
 # ========================== PATH CONFIG ==========================
 clients_folder = Path('D:/Clients')
@@ -22,6 +23,7 @@ folder_date = current_date if client == "RepublicofPalau" else default_folder_da
 folder_loc = None
 db_path = None
 output_file = None
+log_file_path = local_output_dir / f"FW_logging_{timestamp}.log"
 
 # ========================== FIREWALL MATCHING ==========================
 custom_fw_names = [
@@ -30,6 +32,7 @@ custom_fw_names = [
     "STUDENT", "SYSMON"
 ]
 regex_fw_pattern = "|".join(map(re.escape, custom_fw_names))
+
 mdb_filename_patterns = [
     r"^\d{4}-\d{2}-\d{2}-\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}-Summary-firewall\.mdb$",
     fr"^\d{{4}}-\d{{2}}-\d{{2}}-({regex_fw_pattern})-Summary-firewall\.mdb$"
@@ -40,10 +43,24 @@ expected_conditions = [
     "Traffic Size", "Inbound Traffic", "Outbound Traffic", 
     "Allowed Traffic", "Denied Traffic"
 ]
-# add url checking (regex match?) on syslog.txt files
-# firewall type (regex match?) on syslog.txt files
-# print IPs from FW tables in DB with queries
-# add check if we are getting "debug" events (WE DO NOT WANT THOSE), tricky dependant on FW
+
+firewall_syntax_patterns = {
+    "Fortinet": re.compile(r"msg=.*? action=.*? src=.*? dst=.*?", re.IGNORECASE),
+    "PaloAlto": re.compile(r"TRAFFIC.*?source=.*?destination=.*?", re.IGNORECASE),
+    "Juniper": re.compile(r"<\d+>.*?RT_FLOW.*?", re.IGNORECASE),
+    "Cisco ASA": re.compile(r"%ASA-\d+-\d+: .*?", re.IGNORECASE),
+    "SonicWall": re.compile(r"MsgID=\d+;.*?Category=.*?; Priority=.*?;", re.IGNORECASE),
+    "WatchGuard": re.compile(r"Firebox.*?Allow.*?tcp.*?->", re.IGNORECASE),
+}
+
+# ========================= FEATURES TO WORK ON =======================
+# Add url checking (regex match?) on syslog.txt files
+# Firewall type (regex match?) on syslog.txt files -> Reworking this to reflect features of Chatty convo but direct implementation in current script
+# Print IPs from FW tables in DB with queries
+# Add check if we are getting "debug" events (WE DO NOT WANT THOSE), tricky dependant on FW
+# Move the second "Firewalls" query to the same connection as "conditions_query"
+# Add auto-filling client name feature to help with client lookup + input validation
+# Detect different AV products through logs
 
 # ========================== HELPER FUNCTIONS ==========================
 def load_excluded_clients(exceptions_file_path):
@@ -77,9 +94,72 @@ def get_output_file(specific_client, timestamp, local_output_dir):
         filename = f"FW_settings_script_all_{timestamp}.txt"
     return local_output_dir / filename
 
+def setup_logger(log_file_path):
+    logger = logging.getLogger("fw_logger")
+    logger.setLevel(logging.INFO)
+
+    # File handler
+    file_handler = logging.FileHandler(log_file_path)
+    formatter = logging.Formatter('%(asctime)s - %(message)s')
+    file_handler.setFormatter(formatter)
+
+    logger.addHandler(file_handler)
+    return logger
+
+def detect_firewall_type(syslog_path: Path, max_lines=500):
+    if not syslog_path.exists():
+        return "File Not Found"
+
+    try:
+        with syslog_path.open("r", encoding="utf-8", errors="ignore") as f:
+            for _ in range(max_lines):
+                line = f.readline()
+                if not line:
+                    break
+                for fw_type, pattern in firewall_syntax_patterns.items():
+                    if pattern.search(line):
+                        return fw_type
+        return "Unknown"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+def generate_firewall_type(clients_folder: Path, folder_Date: str, the_folder: str, output_path: Path):
+    firewall_results = {}
+
+    for client_folder in clients_folder.iterdir():
+        if not client_folder.is_dir():
+            continue
+
+        client_name = client.folder.name
+        input_folder = client_folder/"Source"/folder_date/the_folder
+
+        # Get syslog file in folder
+        syslog_file = None
+        for file in input_folder.glob("*-Syslog.txt"):
+            syslog_file = file
+            break
+        
+        if syslog_file:
+            fw_type = detect_firewall_type(syslog_file)
+        else:
+            fw_type = "No Syslog Found"
+
+        firewall_results[client_name] = fw_type
+
+    # Save results
+    with output_path.open("w", encoding="utf-8") as f:
+        for client, fw_type in firewall_results.items():
+            f.write(f"{client}: {fw_type}\n")
+
+    print(f"Firewall type mapping written to {output_path}")
+    return firewall_results
+
 # ========================== MAIN FUNCTION ==========================
 def check_ALL_fw_logging_levels(mode="all", specific_client=None):
-    print("Script has started running...\n")
+    logger = setup_logger(log_file_path)
+    
+    print("Script has started running...")
+    logger.info("Script has started running...")
     results = {}
     printed_clients = set()
     failover_pairs = {}
@@ -118,23 +198,25 @@ def check_ALL_fw_logging_levels(mode="all", specific_client=None):
             if specific_client and client != specific_client:
                 continue
             if client in client_name_exceptions:
-                print(f"Skipping excluded folder: {client}\n")
+                logger.info(f"Skipping excluded folder: {client}\n")
                 file.write(f"\nSkipping excluded folder: {client}\n")
                 continue
             
             global folder_loc
             folder_loc = get_folder_loc(client_folder, folder_date)
 
-            print(f"\nChecking client folder: {folder_loc}")
+            # Start writing to output file
+            logger.info(f"Processing: {client}")
+            file.write(f"\nProcessing: {client}\n")
+            print(f"Processing: {client}")
+
+            logger.info(f"Checking client folder: {folder_loc}")
             if not folder_loc.exists():
                 warning_msg = f"Warning: Folder path '{folder_loc}' does not exist. Please investigate this!"
                 print(warning_msg.strip())
+                logger.warning(warning_msg)
                 file.write("\n" + warning_msg + "\n")
                 continue
-
-            # Start writing to output file
-            print(f"Processing: {client}\n")
-            file.write(f"\nProcessing: {client}\n")
 
             # Write failover pairs for client with results from failover script
             if client in failover_pairs and client not in printed_clients:
@@ -188,10 +270,10 @@ def check_ALL_fw_logging_levels(mode="all", specific_client=None):
                     firewall_identifier = db_file_str
 
                 try:
-                    print(f"Attempting to connect to {mdb_file.name}")
+                    logger.info(f"Attempting to connect to {mdb_file.name}")
                     conn = pyodbc.connect(rf"DRIVER={{Microsoft Access Driver (*.mdb, *.accdb)}};DBQ={db_path};")
                     cursor = conn.cursor()
-                    print(f"Successfully connected! ")
+                    logger.info(f"Successfully connected to {mdb_file.name}! ")
                     
                     conditions_query = f"""
                         SELECT 'Inbound Traffic' FROM {traffic_summary_table} WHERE Direction = 'I'
@@ -201,50 +283,71 @@ def check_ALL_fw_logging_levels(mode="all", specific_client=None):
                         UNION SELECT 'Denied Traffic' FROM {traffic_summary_table} WHERE Allowed = 'D'
                     """
 
-                    print(f"Executing query!")
+                    logger.info(f"Executing query!")
                     cursor.execute(conditions_query)
                     conditions_found = cursor.fetchall()
+                    # Writing of missing conditions to file
                     if conditions_found:
                         conditions = [condition[0] for condition in conditions_found]
                         results[mdb_file.name] = conditions
-
-                        # Writing of missing conditions to file
-                        print(f"Conditions found: {', '.join(conditions)}")
+                        logger.info(f"Conditions found: {', '.join(conditions)}")
                         missing_conditions = [condition for condition in expected_conditions if condition not in conditions]
-                        if missing_conditions:
-                            file.write(f"{firewall_identifier}: Missing Conditions: {', '.join(missing_conditions)}\n")
-                        else:
-                            file.write(f"{firewall_identifier}: All expected logging conditions met!\n")
-                        
-                        print(f"DEBUG - firewall_identifier: {firewall_identifier}")
-                        print(f"DEBUG - normalized_ip: {normalized_ip}")
-                        print(f"DEBUG - ips_to_write: {ips_to_write}")
 
-                        if ips_to_write and normalized_ip and normalized_ip in ips_to_write:
-                            print(f"    IPs in network: {', '.join(custom_network_ips)}\n")
-                            file.write(f"    IPs in network: {', '.join(custom_network_ips)}\n")
+                        if not missing_conditions:
+                            severity = "INFO"
+                            status_line = f"{firewall_identifier}: All Conditions!"
+                            file.write(status_line + "\n")
+                            print(status_line)
+                        else:
+                            severity = "WARNING"
+                            status_line = f"{firewall_identifier}: Missing Conditions: {', '.join(missing_conditions)}"
+                            file.write(status_line + "\n")
+                            print(status_line)
+
+                        # if missing_conditions:
+                        #     file.write(f"{firewall_identifier}: Missing Conditions: {', '.join(missing_conditions)}\n")
+                        # else:
+                        #     file.write(f"{firewall_identifier}: All expected logging conditions met!\n"
+
+                        # if ips_to_write and normalized_ip and normalized_ip in ips_to_write:
+                        #     print(f"    IPs in network: {', '.join(custom_network_ips)}\n")
+                        #     file.write(f"    IPs in network: {', '.join(custom_network_ips)}\n")
 
                     else:
-                        results[mdb_file.name] = ["No Matching Condition"]
-                        file.write(f"{firewall_identifier}: No data in summary DB = potential outage! \n")
-                        print(f"No matching conditions found for {firewall_identifier}")
+                        conditons = []
+                        results[mdb_file.name] = "No Matching Conditions"
+                        severity = "ERROR"
+                        status_line = f"{firewall_identifier}: No Conditions! Potential outage or failover FW!"
 
-                    
+                        file.write(status_line + "\n")
+                        print(status_line)
+                        
+                        if severity == "INFO":
+                            logger.info(status_line)
+                        elif severity == "WARNING":
+                            logger.warning(status_line)
+                        elif severity == "ERROR":
+                            logger.error(status_line)
+                        
+                        # results[mdb_file.name] = ["No Matching Condition"]
+                        # file.write(f"{firewall_identifier}: No data in summary DB = potential outage! \n")
+                        # logger.warning(f"No matching conditions found for {firewall_identifier}")
+
                     cursor.close()
                     conn.close()
-                    print(f"Closed connection to {mdb_file.name}")
+                    logger.info(f"Closed connection to {mdb_file.name}")
 
                 except Exception as e:
                     error_msg = f"Error processing {mdb_file.name}: {str(e)}"
                     results[mdb_file.name] = [f"Error: {str(e)}"]
                     file.write(f"{error_msg}\n")
-                    print(error_msg)
+                    logger.critical(error_msg)
 
             if not found_mdb_file:
-                print(f"No .mdb files found for {client}")
+                logger.warning(f"No .mdb files found for {client}")
                 file.write(f"No .mdb files found!\n")
 
-    print("\nScript has finished running! All client folders have been processed.")
+    logger.info("Script has finished running! All client folders have been processed.")
 
 # ========================== EXECUTION ==========================
 mode, specific_client = get_mode_selection()
