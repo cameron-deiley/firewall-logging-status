@@ -45,17 +45,22 @@ expected_conditions = [
 ]
 
 firewall_syntax_patterns = {
-    "Fortinet": re.compile(r"msg=.*? action=.*? src=.*? dst=.*?", re.IGNORECASE),
-    "PaloAlto": re.compile(r"TRAFFIC.*?source=.*?destination=.*?", re.IGNORECASE),
-    "Juniper": re.compile(r"<\d+>.*?RT_FLOW.*?", re.IGNORECASE),
-    "Cisco ASA": re.compile(r"%ASA-\d+-\d+: .*?", re.IGNORECASE),
-    "SonicWall": re.compile(r"MsgID=\d+;.*?Category=.*?; Priority=.*?;", re.IGNORECASE),
-    "WatchGuard": re.compile(r"Firebox.*?Allow.*?tcp.*?->", re.IGNORECASE),
+    "WatchGuard": re.compile(r"firebox|Allow:|Block:", re.IGNORECASE),
+    "Fortinet": re.compile(r"srcip=", re.IGNORECASE),
+    "SonicWall": re.compile(r"msg=", re.IGNORECASE),
+    "PaloAlto": re.compile(r"TRAFFIC,", re.IGNORECASE),
+    "Barracuda": re.compile(r"barracuda", re.IGNORECASE),
+    "Cisco ASA": re.compile(r"%ASA-", re.IGNORECASE),
+    "Cisco Firepower": re.compile(r"SFIMS:", re.IGNORECASE),
+    "Cyberoam": re.compile(r"cyberoam", re.IGNORECASE),
+    "Cisco PIX": re.compile(r"%PIX-", re.IGNORECASE),
+    "Checkpoint": re.compile(r"action=", re.IGNORECASE)
 }
+
 
 # ========================= FEATURES TO WORK ON =======================
 # Add url checking (regex match?) on syslog.txt files
-# Firewall type (regex match?) on syslog.txt files -> Reworking this to reflect features of Chatty convo but direct implementation in current script
+# Firewall type (regex match?) on syslog.txt files -> Work on matching syslog syntax with Jaehee
 # Print IPs from FW tables in DB with queries
 # Add check if we are getting "debug" events (WE DO NOT WANT THOSE), tricky dependant on FW
 # Move the second "Firewalls" query to the same connection as "conditions_query"
@@ -106,52 +111,37 @@ def setup_logger(log_file_path):
     logger.addHandler(file_handler)
     return logger
 
-def detect_firewall_type(syslog_path: Path, max_lines=500):
-    if not syslog_path.exists():
-        return "File Not Found"
-
-    try:
-        with syslog_path.open("r", encoding="utf-8", errors="ignore") as f:
-            for _ in range(max_lines):
-                line = f.readline()
-                if not line:
-                    break
-                for fw_type, pattern in firewall_syntax_patterns.items():
-                    if pattern.search(line):
-                        return fw_type
-        return "Unknown"
-    except Exception as e:
-        return f"Error: {str(e)}"
-
-def generate_firewall_type(clients_folder: Path, folder_Date: str, the_folder: str, output_path: Path):
+def detect_all_firewall_types(clients_folder: Path, folder_date: str, the_folder: str) -> dict:
     firewall_results = {}
 
     for client_folder in clients_folder.iterdir():
         if not client_folder.is_dir():
             continue
 
-        client_name = client.folder.name
-        input_folder = client_folder/"Source"/folder_date/the_folder
+        client_name = client_folder.name
+        input_folder = client_folder / "Source" / folder_date / the_folder
+        syslog_file = next(input_folder.glob("*-Syslog.txt"), None)
 
-        # Get syslog file in folder
-        syslog_file = None
-        for file in input_folder.glob("*-Syslog.txt"):
-            syslog_file = file
-            break
-        
-        if syslog_file:
-            fw_type = detect_firewall_type(syslog_file)
+        if syslog_file and syslog_file.exists():
+            try:
+                with syslog_file.open("r", encoding="utf-8", errors="ignore") as file:
+                    for _ in range(500):  # Read up to 500 lines
+                        line = file.readline()
+                        if not line:
+                            break
+                        for fw_type, pattern in firewall_syntax_patterns.items():
+                            if pattern.search(line):
+                                firewall_results[client_name] = fw_type
+                                break
+                        if client_name in firewall_results:
+                            break
+                if client_name not in firewall_results:
+                    firewall_results[client_name] = "Unknown"
+            except Exception as e:
+                firewall_results[client_name] = f"Error: {str(e)}"
         else:
-            fw_type = "No Syslog Found"
+            firewall_results[client_name] = "No Syslog Found"
 
-        firewall_results[client_name] = fw_type
-
-    # Save results
-    with output_path.open("w", encoding="utf-8") as f:
-        for client, fw_type in firewall_results.items():
-            f.write(f"{client}: {fw_type}\n")
-
-    print(f"Firewall type mapping written to {output_path}")
     return firewall_results
 
 # ========================== MAIN FUNCTION ==========================
@@ -167,6 +157,9 @@ def check_ALL_fw_logging_levels(mode="all", specific_client=None):
 
     # Load client exclusions
     client_name_exceptions = load_excluded_clients(client_name_exceptions_file)
+
+    # Load FW types
+    firewall_type_map = detect_all_firewall_types(clients_folder, folder_date, the_folder)
 
     # Load failover pairs
     if failover_data_file.exists():
@@ -208,14 +201,13 @@ def check_ALL_fw_logging_levels(mode="all", specific_client=None):
             # Start writing to output file
             logger.info(f"Processing: {client}")
             file.write(f"\nProcessing: {client}\n")
-            print(f"Processing: {client}")
+            print(f"\nProcessing: {client}")
 
             logger.info(f"Checking client folder: {folder_loc}")
             if not folder_loc.exists():
-                warning_msg = f"Warning: Folder path '{folder_loc}' does not exist. Please investigate this!"
-                print(warning_msg.strip())
-                logger.warning(warning_msg)
-                file.write("\n" + warning_msg + "\n")
+                print(f"Warning: Folder path '{folder_loc}' does not exist. Please investigate this!\n")
+                logger.warning(f"Warning: Folder path '{folder_loc}' does not exist. Please investigate this!")
+                file.write(f"Warning: Folder path '{folder_loc}' does not exist. Please investigate this!\n")
                 continue
 
             # Write failover pairs for client with results from failover script
@@ -223,8 +215,19 @@ def check_ALL_fw_logging_levels(mode="all", specific_client=None):
                 primary, secondary = failover_pairs[client]
                 file.write(f"Failover Pair: {primary} -> {secondary}\n")
                 printed_clients.add(client)
+            
+
+            # Writing of FW types to output
+            fw_type = firewall_type_map.get(client, "Unknown")
+            file.write(f"Client FW Type: {fw_type}\n")
+            print(f"Client FW Type: {fw_type}")
+            if fw_type == "Unknown":
+                logger.warning(f"Client FW Type: {fw_type}")
+            else:
+                logger.info(f"Client FW Type: {fw_type}")
             file.write("-" * 50 + "\n")
 
+            # Working with the DBs after this point
             found_mdb_file = False
             for mdb_file in folder_loc.iterdir():
                 db_file_str = str(mdb_file)
@@ -253,19 +256,6 @@ def check_ALL_fw_logging_levels(mode="all", specific_client=None):
                 elif fw_name_match:
                     fw_name = fw_name_match.group(1)
                     firewall_identifier = fw_name
-                    try:
-                        conn = pyodbc.connect(rf"DRIVER={{Microsoft Access Driver (*.mdb, *.accdb)}};DBQ={db_path};")
-                        cursor = conn.cursor()
-                        cursor.execute("SELECT * FROM Firewalls WHERE Firewall = ?", (fw_name,))
-                        cursor.close()
-                        conn.close()
-                        custom_network_ips = [row[0] for row in cursor.fetchall()]
-                        print(custom_network_ips)
-                        ips_to_write = [
-                        ".".join(str(int(octet)) for octet in ip.split(".")) for ip in custom_network_ips
-                        ]
-                    except Exception as e:
-                        ips_to_write = [f"Error retrieving IPs: {str(e)}"]
                 else:
                     firewall_identifier = db_file_str
 
@@ -274,7 +264,34 @@ def check_ALL_fw_logging_levels(mode="all", specific_client=None):
                     conn = pyodbc.connect(rf"DRIVER={{Microsoft Access Driver (*.mdb, *.accdb)}};DBQ={db_path};")
                     cursor = conn.cursor()
                     logger.info(f"Successfully connected to {mdb_file.name}! ")
-                    
+
+                    # Identify firewall
+                    if raw_ip_match:
+                        normalized_ip = ".".join(str(int(octet)) for octet in raw_ip_match.group(1).split("."))
+                        firewall_identifier = normalized_ip
+                        is_custom_fw = False
+                    elif fw_name_match:
+                        firewall_identifier = fw_name_match.group(1)
+                        is_custom_fw = True
+                    else:
+                        firewall_identifier = mdb_file.name
+                        is_custom_fw = False
+
+                    # Get IPs if it's a custom-named firewall
+                    custom_fw_ips = []
+
+                    if is_custom_fw:
+                        try:
+                            cursor.execute("SELECT Firewall FROM Firewalls")
+                            custom_fw_ips = list({
+                                ".".join(str(int(octet)) for octet in row[0].split(".")) for row in cursor.fetchall()
+                            })
+
+                        except Exception as e:
+                            custom_fw_ips = [f"Error retrieving IPs: {str(e)}"]
+
+
+                    # Run logging conditions query
                     conditions_query = f"""
                         SELECT 'Inbound Traffic' FROM {traffic_summary_table} WHERE Direction = 'I'
                         UNION SELECT 'Outbound Traffic' FROM {traffic_summary_table} WHERE Direction = 'O'
@@ -283,55 +300,42 @@ def check_ALL_fw_logging_levels(mode="all", specific_client=None):
                         UNION SELECT 'Denied Traffic' FROM {traffic_summary_table} WHERE Allowed = 'D'
                     """
 
-                    logger.info(f"Executing query!")
+                    logger.info("Executing query!")
                     cursor.execute(conditions_query)
                     conditions_found = cursor.fetchall()
-                    # Writing of missing conditions to file
+
                     if conditions_found:
                         conditions = [condition[0] for condition in conditions_found]
                         results[mdb_file.name] = conditions
                         logger.info(f"Conditions found: {', '.join(conditions)}")
-                        missing_conditions = [condition for condition in expected_conditions if condition not in conditions]
+                        missing_conditions = [c for c in expected_conditions if c not in conditions]
 
                         if not missing_conditions:
                             severity = "INFO"
                             status_line = f"{firewall_identifier}: All Conditions!"
-                            file.write(status_line + "\n")
-                            print(status_line)
                         else:
                             severity = "WARNING"
                             status_line = f"{firewall_identifier}: Missing Conditions: {', '.join(missing_conditions)}"
-                            file.write(status_line + "\n")
-                            print(status_line)
-
-                        # if missing_conditions:
-                        #     file.write(f"{firewall_identifier}: Missing Conditions: {', '.join(missing_conditions)}\n")
-                        # else:
-                        #     file.write(f"{firewall_identifier}: All expected logging conditions met!\n"
-
-                        # if ips_to_write and normalized_ip and normalized_ip in ips_to_write:
-                        #     print(f"    IPs in network: {', '.join(custom_network_ips)}\n")
-                        #     file.write(f"    IPs in network: {', '.join(custom_network_ips)}\n")
-
                     else:
-                        conditons = []
                         results[mdb_file.name] = "No Matching Conditions"
                         severity = "ERROR"
                         status_line = f"{firewall_identifier}: No Conditions! Potential outage or failover FW!"
 
-                        file.write(status_line + "\n")
-                        print(status_line)
-                        
-                        if severity == "INFO":
-                            logger.info(status_line)
-                        elif severity == "WARNING":
-                            logger.warning(status_line)
-                        elif severity == "ERROR":
-                            logger.error(status_line)
-                        
-                        # results[mdb_file.name] = ["No Matching Condition"]
-                        # file.write(f"{firewall_identifier}: No data in summary DB = potential outage! \n")
-                        # logger.warning(f"No matching conditions found for {firewall_identifier}")
+                    file.write(status_line + "\n")
+                    print(status_line)
+
+                    if custom_fw_ips:
+                        formatted_ips = ", ".join(custom_fw_ips)
+                        file.write(f"    IPs in network: {formatted_ips}\n")
+                        print(f"    IPs in network: {formatted_ips}")
+                        logger.info(f"{firewall_identifier} IPs in network: {formatted_ips}")
+
+                    if severity == "INFO":
+                        logger.info(status_line)
+                    elif severity == "WARNING":
+                        logger.warning(status_line)
+                    elif severity == "ERROR":
+                        logger.error(status_line)
 
                     cursor.close()
                     conn.close()
