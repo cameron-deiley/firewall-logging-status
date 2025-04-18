@@ -4,12 +4,14 @@ from datetime import datetime, timedelta
 import re
 import json
 import logging
+import csv
 
 # ========================== PATH CONFIG ==========================
 clients_folder = Path('D:/Clients')
 client_name_exceptions_file = Path('D:/Temp/Analysts/Julian/Script_Source/ClientExclusions.txt')
 local_output_dir = Path("D:/Temp/Analysts/Cam/Threat Engineering/FW Script Outputs")
 failover_data_file = Path("D:/Temp/Analysts/Cam/Threat Engineering/firewall_failovers.txt")
+csv_path = Path("D:/Documentation/Internal/ClientFirewallDetails.csv")
 
 # ========================== VARIABLE CONFIG ==========================
 timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
@@ -20,12 +22,12 @@ the_folder = "Input"
 traffic_summary_table = "TrafficSummary"
 client = clients_folder.name
 folder_date = current_date if client == "RepublicofPalau" else default_folder_date
+log_file_path = local_output_dir / f"FW_logging_{timestamp}.log"
 folder_loc = None
 db_path = None
 output_file = None
-log_file_path = local_output_dir / f"FW_logging_{timestamp}.log"
 
-# ========================== FIREWALL MATCHING ==========================
+# ========================== PATTERNS AND LISTS ==========================
 custom_fw_names = [
     "BRANCH", "CORPORATE", "CITYHALL", "CORP", "FIREDEPARTMENT",
     "GUEST", "PCI", "REMOTE", "SCADA", "SCHOOLS", "SEWERPLANT", 
@@ -38,34 +40,30 @@ mdb_filename_patterns = [
     fr"^\d{{4}}-\d{{2}}-\d{{2}}-({regex_fw_pattern})-Summary-firewall\.mdb$"
 ]
 
-# ========================== CHECK CRITERIA ==========================
 expected_conditions = [
     "Traffic Size", "Inbound Traffic", "Outbound Traffic", 
     "Allowed Traffic", "Denied Traffic"
 ]
 
-firewall_syntax_patterns = {
-    "WatchGuard": re.compile(r"firebox|Allow:|Block:", re.IGNORECASE),
-    "Fortinet": re.compile(r"srcip=", re.IGNORECASE),
-    "SonicWall": re.compile(r"msg=", re.IGNORECASE),
-    "PaloAlto": re.compile(r"TRAFFIC,", re.IGNORECASE),
-    "Barracuda": re.compile(r"barracuda", re.IGNORECASE),
-    "Cisco ASA": re.compile(r"%ASA-", re.IGNORECASE),
-    "Cisco Firepower": re.compile(r"SFIMS:", re.IGNORECASE),
-    "Cyberoam": re.compile(r"cyberoam", re.IGNORECASE),
-    "Cisco PIX": re.compile(r"%PIX-", re.IGNORECASE),
-    "Checkpoint": re.compile(r"action=", re.IGNORECASE)
+fw_type_normalization = {
+    "palo": "Palo Alto",
+    "sonicwall": "Sonicwall",
+    "arista": "Arista",
+    "barracuda_11_13": "Barracuda",
+    "Barracuda_11_13": "Barracuda",
+    "asa": "Cisco ASA",
+    "fortigate": "Fortigate",
+    "meraki": "Meraki",
+    "sophoswaf": "Sophos WAF",
+    "cyberoam": "Cyberoam",
+    "firepower": "Cisco Firepower",
+    "watchguard113": "WatchGuard",
+    "ubiquiti": "Ubiquiti",
 }
 
-
 # ========================= FEATURES TO WORK ON =======================
-# Add url checking (regex match?) on syslog.txt files
-# Firewall type (regex match?) on syslog.txt files -> Work on matching syslog syntax with Jaehee
-# Print IPs from FW tables in DB with queries
-# Add check if we are getting "debug" events (WE DO NOT WANT THOSE), tricky dependant on FW
-# Move the second "Firewalls" query to the same connection as "conditions_query"
-# Add auto-filling client name feature to help with client lookup + input validation
 # Detect different AV products through logs
+# Add check if we are getting "debug" events (WE DO NOT WANT THOSE), tricky dependant on FW
 
 # ========================== HELPER FUNCTIONS ==========================
 def load_excluded_clients(exceptions_file_path):
@@ -81,10 +79,55 @@ def load_excluded_clients(exceptions_file_path):
 
 def get_mode_selection():
     mode = input("Check all clients or a specific one? (all/one): ").strip().lower()
+
     if mode == "one":
-        client = input("Enter the name of the client folder as it appears in the LP: ").strip()
-        return mode, client
-    return mode, None
+        available_clients = [folder.name for folder in clients_folder.iterdir() if folder.is_dir()]
+        available_clients.sort()
+
+        while True:
+            # print("\nAvailable clients:")
+            # for idx, client_name in enumerate(available_clients, 1):
+            #     print(f"  {idx}. {client_name}")
+
+            user_input = input("\nType part of the client name or number to select: ").strip()
+
+            if user_input.isdigit():
+                selection_index = int(user_input) - 1
+                if 0 <= selection_index < len(available_clients):
+                    selected_client = available_clients[selection_index]
+                    confirm = input(f"You selected '{selected_client}'. Confirm? (y/n): ").strip().lower()
+                    if confirm == 'y':
+                        return mode, selected_client
+            else:
+                matching_clients = [name for name in available_clients if user_input.lower() in name.lower()]
+                if not matching_clients:
+                    print("No matches found. Try again.")
+                    continue
+                elif len(matching_clients) == 1:
+                    confirm = input(f"Did you mean '{matching_clients[0]}'? (y/n): ").strip().lower()
+                    if confirm == 'y':
+                        return mode, matching_clients[0]
+                else:
+                    print("Multiple matches found:")
+                    for idx, match in enumerate(matching_clients, 1):
+                        print(f"  {idx}. {match}")
+                    secondary_input = input("Enter number to select, or try typing more: ").strip()
+                    if secondary_input.isdigit():
+                        match_index = int(secondary_input) - 1
+                        if 0 <= match_index < len(matching_clients):
+                            selected_client = matching_clients[match_index]
+                            confirm = input(f"You selected '{selected_client}'. Confirm? (y/n): ").strip().lower()
+                            if confirm == 'y':
+                                return mode, selected_client
+
+            print("Invalid selection. Please try again.")
+
+    elif mode == "all":
+        return mode, None
+
+    # If input was invalid
+    print("Invalid mode selected. Exiting.")
+    return None, None
 
 def get_folder_loc(client_folder, folder_date):
     return client_folder/"Source"/folder_date/the_folder
@@ -111,38 +154,77 @@ def setup_logger(log_file_path):
     logger.addHandler(file_handler)
     return logger
 
-def detect_all_firewall_types(clients_folder: Path, folder_date: str, the_folder: str) -> dict:
-    firewall_results = {}
+def parse_client_firewall_types_from_csv(csv_path: Path) -> dict:
+    client_fw_type_map = {}
+    f_ip_pattern = re.compile(r"--f\s+(\d{1,3}(?:\.\d{1,3}){3})")
+    type_pattern = re.compile(r"--(\w+)\b")
+
+    if not csv_path.exists():
+        print(f"Warning: CSV not found: {csv_path}")
+        return client_fw_type_map
+
+    try:
+        with csv_path.open("r", encoding="utf-8") as file:
+            reader = csv.reader(file)
+            for row in reader:
+                if len(row) < 2:
+                    continue
+
+                client_name = row[0].strip()
+                content = row[1]
+
+                # Find --f IP
+                f_ip_match = f_ip_pattern.search(content)
+                # Find last --type
+                all_types = type_pattern.findall(content)
+                fw_type = all_types[-1] if all_types else None
+
+                if f_ip_match and fw_type:
+                    ip = f_ip_match.group(1)
+                    normalized_ip = ".".join(str(int(octet)) for octet in ip.split("."))
+
+                    if client_name not in client_fw_type_map:
+                        client_fw_type_map[client_name] = {}
+                    client_fw_type_map[client_name][normalized_ip] = fw_type
+    except Exception as e:
+        print(f"Error reading firewall type CSV: {e}")
+
+    return client_fw_type_map
+
+# def find_debug_events_in_syslogs(clients_folder: Path, folder_date: str, input_folder: str) -> dict:
+    debug_event_map = {}
+    ip_pattern = re.compile(r"(\d{3}\.\d{3}\.\d{3}\.\d{3})")  # matches zero-padded IPs
 
     for client_folder in clients_folder.iterdir():
         if not client_folder.is_dir():
             continue
 
         client_name = client_folder.name
-        input_folder = client_folder / "Source" / folder_date / the_folder
-        syslog_file = next(input_folder.glob("*-Syslog.txt"), None)
+        debug_event_map[client_name] = {}
 
-        if syslog_file and syslog_file.exists():
+        folder_loc = client_folder / "Source" / folder_date / input_folder
+        if not folder_loc.exists():
+            continue
+
+        for syslog_file in folder_loc.glob("*-Syslog.txt"):
+            ip_match = ip_pattern.search(syslog_file.name)
+            if not ip_match:
+                continue
+
+            # Normalize IP (remove zero-padding)
+            padded_ip = ip_match.group(1)
+            normalized_ip = ".".join(str(int(octet)) for octet in padded_ip.split("."))
+
             try:
-                with syslog_file.open("r", encoding="utf-8", errors="ignore") as file:
-                    for _ in range(500):  # Read up to 500 lines
-                        line = file.readline()
-                        if not line:
-                            break
-                        for fw_type, pattern in firewall_syntax_patterns.items():
-                            if pattern.search(line):
-                                firewall_results[client_name] = fw_type
-                                break
-                        if client_name in firewall_results:
-                            break
-                if client_name not in firewall_results:
-                    firewall_results[client_name] = "Unknown"
+                with syslog_file.open("r", encoding="utf-8", errors="ignore") as f:
+                    found_debug = any(".Debug" in line for line in f)
             except Exception as e:
-                firewall_results[client_name] = f"Error: {str(e)}"
-        else:
-            firewall_results[client_name] = "No Syslog Found"
+                print(f"Error reading {syslog_file.name}: {e}")
+                found_debug = "Error"
 
-    return firewall_results
+            debug_event_map[client_name][normalized_ip] = found_debug
+
+    return debug_event_map
 
 # ========================== MAIN FUNCTION ==========================
 def check_ALL_fw_logging_levels(mode="all", specific_client=None):
@@ -157,15 +239,21 @@ def check_ALL_fw_logging_levels(mode="all", specific_client=None):
 
     # Load client exclusions
     client_name_exceptions = load_excluded_clients(client_name_exceptions_file)
-
+    print("Client Exemptions loaded!")
+    
     # Load FW types
-    firewall_type_map = detect_all_firewall_types(clients_folder, folder_date, the_folder)
+    client_fw_type_map = parse_client_firewall_types_from_csv(csv_path)
+    print("Client Firewall types mapped!")
+
+    # Load debug events dictionary
+    #debug_event_map = find_debug_events_in_syslogs(clients_folder, folder_date, the_folder)
+    #print("Debug events found!")
 
     # Load failover pairs
     if failover_data_file.exists():
         with failover_data_file.open("r", encoding="utf-8") as file:
             failover_pairs = json.load(file)
-    #print(failover_pairs)
+    print("Failover pairs loaded!")
 
     # Bidirectional lookup for failover pairs
     for client, (primary, secondary) in failover_pairs.items():
@@ -205,7 +293,7 @@ def check_ALL_fw_logging_levels(mode="all", specific_client=None):
 
             logger.info(f"Checking client folder: {folder_loc}")
             if not folder_loc.exists():
-                print(f"Warning: Folder path '{folder_loc}' does not exist. Please investigate this!\n")
+                print(f"Warning: Folder path '{folder_loc}' does not exist. Please investigate this!")
                 logger.warning(f"Warning: Folder path '{folder_loc}' does not exist. Please investigate this!")
                 file.write(f"Warning: Folder path '{folder_loc}' does not exist. Please investigate this!\n")
                 continue
@@ -215,16 +303,6 @@ def check_ALL_fw_logging_levels(mode="all", specific_client=None):
                 primary, secondary = failover_pairs[client]
                 file.write(f"Failover Pair: {primary} -> {secondary}\n")
                 printed_clients.add(client)
-            
-
-            # Writing of FW types to output
-            fw_type = firewall_type_map.get(client, "Unknown")
-            file.write(f"Client FW Type: {fw_type}\n")
-            print(f"Client FW Type: {fw_type}")
-            if fw_type == "Unknown":
-                logger.warning(f"Client FW Type: {fw_type}")
-            else:
-                logger.info(f"Client FW Type: {fw_type}")
             file.write("-" * 50 + "\n")
 
             # Working with the DBs after this point
@@ -244,20 +322,7 @@ def check_ALL_fw_logging_levels(mode="all", specific_client=None):
                 # Match IP first -> FW name if no IP is found
                 raw_ip_match = re.search(r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})", db_file_str)
                 fw_name_match = re.search(fr"({regex_fw_pattern})", db_file_str)
-                
                 normalized_ip = None
-                custom_network_ips = [] # Populated only when matching FW name
-                ips_to_write = []       # List used for output writing
-
-                if raw_ip_match:
-                    normalized_ip = raw_ip_match.group(1)
-                    normalized_ip = ".".join(str(int(octet)) for octet in normalized_ip.split("."))
-                    firewall_identifier = normalized_ip  # Used downstream as the primary label
-                elif fw_name_match:
-                    fw_name = fw_name_match.group(1)
-                    firewall_identifier = fw_name
-                else:
-                    firewall_identifier = db_file_str
 
                 try:
                     logger.info(f"Attempting to connect to {mdb_file.name}")
@@ -266,6 +331,7 @@ def check_ALL_fw_logging_levels(mode="all", specific_client=None):
                     logger.info(f"Successfully connected to {mdb_file.name}! ")
 
                     # Identify firewall
+                    # 1. Determine the firewall_identifier
                     if raw_ip_match:
                         normalized_ip = ".".join(str(int(octet)) for octet in raw_ip_match.group(1).split("."))
                         firewall_identifier = normalized_ip
@@ -277,9 +343,16 @@ def check_ALL_fw_logging_levels(mode="all", specific_client=None):
                         firewall_identifier = mdb_file.name
                         is_custom_fw = False
 
+                    # 2. THEN safely check if we want to include firewall type
+                    if not is_custom_fw:
+                        raw_type = client_fw_type_map.get(client, {}).get(firewall_identifier, "Unknown")
+                        fw_type = fw_type_normalization.get(raw_type.strip(), raw_type)
+                        identifier_with_type = f"{firewall_identifier} ({fw_type})"
+                    else:
+                        identifier_with_type = firewall_identifier
+
                     # Get IPs if it's a custom-named firewall
                     custom_fw_ips = []
-
                     if is_custom_fw:
                         try:
                             cursor.execute("SELECT Firewall FROM Firewalls")
@@ -289,7 +362,6 @@ def check_ALL_fw_logging_levels(mode="all", specific_client=None):
 
                         except Exception as e:
                             custom_fw_ips = [f"Error retrieving IPs: {str(e)}"]
-
 
                     # Run logging conditions query
                     conditions_query = f"""
