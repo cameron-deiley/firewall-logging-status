@@ -33,7 +33,9 @@ custom_fw_names = [
     "GUEST", "PCI", "REMOTE", "SCADA", "SCHOOLS", "SEWERPLANT", 
     "STUDENT", "SYSMON"
 ]
+
 regex_fw_pattern = "|".join(map(re.escape, custom_fw_names))
+
 mdb_filename_patterns = [
     r"^\d{4}-\d{2}-\d{2}-\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}-Summary-firewall\.mdb$",
     fr"^\d{{4}}-\d{{2}}-\d{{2}}-({regex_fw_pattern})-Summary-firewall\.mdb$"
@@ -64,10 +66,6 @@ fw_type_normalization = {
     "ubiquiti": "Ubiquiti",
     "checkpoint": "Checkpoint"
 }
-
-# ========================= FEATURES TO WORK ON =======================
-# Detect different AV products through logs
-# Add check if we are getting "debug" events (WE DO NOT WANT THOSE), tricky dependant on FW
 
 # ========================== HELPER FUNCTIONS ==========================
 def load_excluded_clients(exceptions_file_path):
