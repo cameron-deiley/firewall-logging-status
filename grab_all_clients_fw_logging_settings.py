@@ -18,7 +18,7 @@ timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
 ip_regex_pattern = re.compile(r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})")
 default_folder_date = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
 current_date = datetime.now().strftime("%Y%m%d")
-the_folder = "Input"
+input_folder = "Input"
 traffic_summary_table = "TrafficSummary"
 client = clients_folder.name
 folder_date = current_date if client == "RepublicofPalau" else default_folder_date
@@ -34,16 +34,19 @@ custom_fw_names = [
     "STUDENT", "SYSMON"
 ]
 regex_fw_pattern = "|".join(map(re.escape, custom_fw_names))
-
 mdb_filename_patterns = [
     r"^\d{4}-\d{2}-\d{2}-\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}-Summary-firewall\.mdb$",
     fr"^\d{{4}}-\d{{2}}-\d{{2}}-({regex_fw_pattern})-Summary-firewall\.mdb$"
 ]
 
-expected_conditions = [
-    "Traffic Size", "Inbound Traffic", "Outbound Traffic", 
-    "Allowed Traffic", "Denied Traffic"
-]
+expected_conditions = {
+    "Traffic Size": True,
+    "Inbound Traffic": True,
+    "Outbound Traffic": True,
+    "Allowed Traffic": True,
+    "Denied Traffic": True,
+    "Debug Events": False
+}
 
 fw_type_normalization = {
     "palo": "Palo Alto",
@@ -59,6 +62,7 @@ fw_type_normalization = {
     "firepower": "Cisco Firepower",
     "watchguard113": "WatchGuard",
     "ubiquiti": "Ubiquiti",
+    "checkpoint": "Checkpoint"
 }
 
 # ========================= FEATURES TO WORK ON =======================
@@ -130,7 +134,7 @@ def get_mode_selection():
     return None, None
 
 def get_folder_loc(client_folder, folder_date):
-    return client_folder/"Source"/folder_date/the_folder
+    return client_folder/"Source"/folder_date/input_folder
 
 def get_db_path(folder_loc, mdb_file):
     return folder_loc/mdb_file
@@ -191,40 +195,29 @@ def parse_client_firewall_types_from_csv(csv_path: Path) -> dict:
 
     return client_fw_type_map
 
-# def find_debug_events_in_syslogs(clients_folder: Path, folder_date: str, input_folder: str) -> dict:
-    debug_event_map = {}
-    ip_pattern = re.compile(r"(\d{3}\.\d{3}\.\d{3}\.\d{3})")  # matches zero-padded IPs
+def check_debug_for_ip(folder_loc: Path, fw_identifier: str) -> bool:
+    """
+    Checks if a .Syslog.txt file exists for the given IP (zero-padded format) and contains '.Debug' entries.
+    Returns True if debug events are found, False otherwise.
+    """
+    if not re.match(r"^\d+\.\d+\.\d+\.\d+$", fw_identifier):
+        return False  # Only check IP-based firewalls
 
-    for client_folder in clients_folder.iterdir():
-        if not client_folder.is_dir():
-            continue
+    # Zero-pad the IP to match syslog filename pattern
+    padded_ip = ".".join(octet.zfill(3) for octet in fw_identifier.split("."))
 
-        client_name = client_folder.name
-        debug_event_map[client_name] = {}
+    # Look for file like: 2024-04-16-00-010.100.000.001-Syslog.txt
+    try:
+        syslog_file = next(folder_loc.glob(f"*-{padded_ip}-Syslog.txt"), None)
+        if not syslog_file or not syslog_file.exists():
+            return False
 
-        folder_loc = client_folder / "Source" / folder_date / input_folder
-        if not folder_loc.exists():
-            continue
+        with syslog_file.open("r", encoding="utf-8", errors="ignore") as f:
+            return any(".Debug" in line for line in f)
 
-        for syslog_file in folder_loc.glob("*-Syslog.txt"):
-            ip_match = ip_pattern.search(syslog_file.name)
-            if not ip_match:
-                continue
-
-            # Normalize IP (remove zero-padding)
-            padded_ip = ip_match.group(1)
-            normalized_ip = ".".join(str(int(octet)) for octet in padded_ip.split("."))
-
-            try:
-                with syslog_file.open("r", encoding="utf-8", errors="ignore") as f:
-                    found_debug = any(".Debug" in line for line in f)
-            except Exception as e:
-                print(f"Error reading {syslog_file.name}: {e}")
-                found_debug = "Error"
-
-            debug_event_map[client_name][normalized_ip] = found_debug
-
-    return debug_event_map
+    except Exception as e:
+        print(f"Error checking debug events for {fw_identifier}: {e}")
+        return False
 
 # ========================== MAIN FUNCTION ==========================
 def check_ALL_fw_logging_levels(mode="all", specific_client=None):
@@ -239,15 +232,11 @@ def check_ALL_fw_logging_levels(mode="all", specific_client=None):
 
     # Load client exclusions
     client_name_exceptions = load_excluded_clients(client_name_exceptions_file)
-    print("Client Exemptions loaded!")
+    print("Client exemptions loaded!")
     
     # Load FW types
     client_fw_type_map = parse_client_firewall_types_from_csv(csv_path)
-    print("Client Firewall types mapped!")
-
-    # Load debug events dictionary
-    #debug_event_map = find_debug_events_in_syslogs(clients_folder, folder_date, the_folder)
-    #print("Debug events found!")
+    print("Client firewall types mapped!")
 
     # Load failover pairs
     if failover_data_file.exists():
@@ -302,6 +291,8 @@ def check_ALL_fw_logging_levels(mode="all", specific_client=None):
             if client in failover_pairs and client not in printed_clients:
                 primary, secondary = failover_pairs[client]
                 file.write(f"Failover Pair: {primary} -> {secondary}\n")
+                logger.info(f"Failover Pair: {primary} -> {secondary}\n")
+                print(f"Failover Pair: {primary} -> {secondary}\n")
                 printed_clients.add(client)
             file.write("-" * 50 + "\n")
 
@@ -360,8 +351,8 @@ def check_ALL_fw_logging_levels(mode="all", specific_client=None):
                                 ".".join(str(int(octet)) for octet in row[0].split(".")) for row in cursor.fetchall()
                             })
 
-                        except Exception as e:
-                            custom_fw_ips = [f"Error retrieving IPs: {str(e)}"]
+                        except Exception as exception:
+                            custom_fw_ips = [f"Error retrieving IPs: {str(exception)}"]
 
                     # Run logging conditions query
                     conditions_query = f"""
@@ -376,32 +367,55 @@ def check_ALL_fw_logging_levels(mode="all", specific_client=None):
                     cursor.execute(conditions_query)
                     conditions_found = cursor.fetchall()
 
+                    found_conditions = []
                     if conditions_found:
-                        conditions = [condition[0] for condition in conditions_found]
-                        results[mdb_file.name] = conditions
-                        logger.info(f"Conditions found: {', '.join(conditions)}")
-                        missing_conditions = [c for c in expected_conditions if c not in conditions]
+                        found_conditions = [condition[0] for condition in conditions_found]
 
-                        if not missing_conditions:
-                            severity = "INFO"
-                            status_line = f"{firewall_identifier}: All Conditions!"
-                        else:
-                            severity = "WARNING"
-                            status_line = f"{firewall_identifier}: Missing Conditions: {', '.join(missing_conditions)}"
+                    if is_custom_fw == False:
+                        if check_debug_for_ip(folder_loc, firewall_identifier):
+                            found_conditions.append("Debug Events")
+
+                    # Step 2: Build state map and fill in expected keys
+                    condition_states = {cond: True for cond in found_conditions}
+                    for key in expected_conditions:
+                        if key not in condition_states:
+                            condition_states[key] = False
+
+                    # Step 3: Compare actual vs expected
+                    misconfigurations = []
+                    for condition, expected_value in expected_conditions.items():
+                        actual_value = condition_states[condition]
+                        if actual_value != expected_value:
+                            misconfigurations.append(
+                                f"{condition}={'Yes' if actual_value else 'No'} (Expected: {'Yes' if expected_value else 'No'})")
+                            
+                    # Write condition summary
+                    if len(misconfigurations) == 0:
+                        status_line = f"{identifier_with_type}: Logging Configuration: Optimal!"
+                        file.write(status_line + "\n")
+                        print(status_line)
                     else:
-                        results[mdb_file.name] = "No Matching Conditions"
+                        status_line = f"{identifier_with_type}: Logging Misconfigurations:"
+                        file.write(status_line + "\n")
+                        print(status_line)
+
+                        # Calculate alignment length based on the status line
+                        alignment_space = " " * (len(status_line) + 1)
+
+                        for mis in misconfigurations:
+                            aligned_line = f"{alignment_space}{mis}"
+                            file.write(aligned_line + "\n")
+                            print(aligned_line)
+
+                    # Assign severity based on logic
+                    if len(found_conditions) == 0:
                         severity = "ERROR"
-                        status_line = f"{firewall_identifier}: No Conditions! Potential outage or failover FW!"
+                    elif len(misconfigurations) > 0:
+                        severity = "WARNING"
+                    else:
+                        severity = "INFO"
 
-                    file.write(status_line + "\n")
-                    print(status_line)
-
-                    if custom_fw_ips:
-                        formatted_ips = ", ".join(custom_fw_ips)
-                        file.write(f"    IPs in network: {formatted_ips}\n")
-                        print(f"    IPs in network: {formatted_ips}")
-                        logger.info(f"{firewall_identifier} IPs in network: {formatted_ips}")
-
+                    # Log severity level
                     if severity == "INFO":
                         logger.info(status_line)
                     elif severity == "WARNING":
@@ -409,13 +423,20 @@ def check_ALL_fw_logging_levels(mode="all", specific_client=None):
                     elif severity == "ERROR":
                         logger.error(status_line)
 
+
+                    if custom_fw_ips:
+                        formatted_ips = ", ".join(custom_fw_ips)
+                        file.write(f"    IPs in network: {formatted_ips}\n")
+                        print(f"    IPs in network: {formatted_ips}")
+                        logger.info(f"{identifier_with_type} IPs in network: {formatted_ips}")
+
                     cursor.close()
                     conn.close()
                     logger.info(f"Closed connection to {mdb_file.name}")
 
-                except Exception as e:
-                    error_msg = f"Error processing {mdb_file.name}: {str(e)}"
-                    results[mdb_file.name] = [f"Error: {str(e)}"]
+                except Exception as exception:
+                    error_msg = f"Error processing {mdb_file.name}: {str(exception)}"
+                    results[mdb_file.name] = [f"Error: {str(exception)}"]
                     file.write(f"{error_msg}\n")
                     logger.critical(error_msg)
 
