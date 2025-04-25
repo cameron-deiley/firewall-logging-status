@@ -1,3 +1,12 @@
+# Firewall Logging Script - Cameron Deiley
+# This script has been developed with the purpose of keeping better track of the current status of our client's firewalls. The script has the following functionality:
+
+# Iterates through client folder and grabs all summary firewall database files and checks if any of them are missing any of the following conditions:
+# 1. Traffic direction (Inbound + Outbound), size, permission (allowed/denied), debug events (too much info)
+# 2. Prints out failover pairs for each client
+# 3. Can be ran on one client or across all clients
+# 4. Shows vendor of FW for easier troubleshooting
+
 import pyodbc
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -12,6 +21,7 @@ client_name_exceptions_file = Path('D:/Temp/Analysts/Julian/Script_Source/Client
 local_output_dir = Path("D:/Temp/Analysts/Cam/Threat Engineering/FW Script Outputs")
 failover_data_file = Path("D:/Temp/Analysts/Cam/Threat Engineering/firewall_failovers.txt")
 csv_path = Path("D:/Documentation/Internal/ClientFirewallDetails.csv")
+client_date_exceptions_file = Path('D:/Temp/Analysts/Julian/Script_Source/ClientFolderDateExceptions.txt')
 
 # ========================== VARIABLE CONFIG ==========================
 timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
@@ -21,7 +31,6 @@ current_date = datetime.now().strftime("%Y%m%d")
 input_folder = "Input"
 traffic_summary_table = "TrafficSummary"
 client = clients_folder.name
-folder_date = current_date if client == "RepublicofPalau" else default_folder_date
 log_file_path = local_output_dir / f"FW_logging_{timestamp}.log"
 folder_loc = None
 db_path = None
@@ -79,57 +88,54 @@ def load_excluded_clients(exceptions_file_path):
                     excluded.append(clean)
     return excluded
 
+def load_date_exclustions(date_exclustions_file_path):
+    # Loads exclusions based on date
+    excluded = []
+    if date_exclustions_file_path.exists():
+        with date_exclustions_file_path.open('r', errors='ignore') as file:
+            for line in file:
+                clean = line.strip()
+                if clean and clean not in excluded:
+                    excluded.append(clean)
+    return excluded
+
 def get_mode_selection():
-    mode = input("Check all clients or a specific one? (all/one): ").strip().lower()
-
-    if mode == "one":
-        available_clients = [folder.name for folder in clients_folder.iterdir() if folder.is_dir()]
-        available_clients.sort()
-
-        while True:
-            # print("\nAvailable clients:")
-            # for idx, client_name in enumerate(available_clients, 1):
-            #     print(f"  {idx}. {client_name}")
-
-            user_input = input("\nType part of the client name or number to select: ").strip()
-
-            if user_input.isdigit():
-                selection_index = int(user_input) - 1
-                if 0 <= selection_index < len(available_clients):
-                    selected_client = available_clients[selection_index]
-                    confirm = input(f"You selected '{selected_client}'. Confirm? (y/n): ").strip().lower()
-                    if confirm == 'y':
-                        return mode, selected_client
-            else:
+    available_clients = [folder.name for folder in clients_folder.iterdir() if folder.is_dir()]
+    available_clients.sort()
+    while True:
+        mode = input("Check all clients or a specific one? (all/one): ").strip().lower()
+        if mode == "all":
+            return mode, None
+        elif mode == "one":
+            while True:
+                user_input = input("\nType part of the client name to search: ").strip()
                 matching_clients = [name for name in available_clients if user_input.lower() in name.lower()]
                 if not matching_clients:
-                    print("No matches found. Try again.")
+                    print("No matching clients found. Try again.")
                     continue
                 elif len(matching_clients) == 1:
                     confirm = input(f"Did you mean '{matching_clients[0]}'? (y/n): ").strip().lower()
                     if confirm == 'y':
                         return mode, matching_clients[0]
+                    else:
+                        continue
                 else:
-                    print("Multiple matches found:")
-                    for idx, match in enumerate(matching_clients, 1):
-                        print(f"  {idx}. {match}")
-                    secondary_input = input("Enter number to select, or try typing more: ").strip()
-                    if secondary_input.isdigit():
-                        match_index = int(secondary_input) - 1
-                        if 0 <= match_index < len(matching_clients):
-                            selected_client = matching_clients[match_index]
-                            confirm = input(f"You selected '{selected_client}'. Confirm? (y/n): ").strip().lower()
-                            if confirm == 'y':
-                                return mode, selected_client
+                    print("Multiple matching clients found:")
+                    for match in matching_clients:
+                        print(f"  - {match}")
+                    exact_input = input("Type the full client name from above exactly as shown: ").strip()
+                    if exact_input in matching_clients:
+                        confirm = input(f"You selected '{exact_input}'. Confirm? (y/n): ").strip().lower()
+                        if confirm == 'y':
+                            return mode, exact_input
+                        else:
+                            continue
+                    else:
+                        print("That name wasn’t in the list. Try again.")
+                        continue
+        else:
+            print("Invalid mode. Please type 'all' or 'one'.")
 
-            print("Invalid selection. Please try again.")
-
-    elif mode == "all":
-        return mode, None
-
-    # If input was invalid
-    print("Invalid mode selected. Exiting.")
-    return None, None
 
 def get_folder_loc(client_folder, folder_date):
     return client_folder/"Source"/folder_date/input_folder
@@ -231,6 +237,9 @@ def check_ALL_fw_logging_levels(mode="all", specific_client=None):
     # Load client exclusions
     client_name_exceptions = load_excluded_clients(client_name_exceptions_file)
     print("Client exemptions loaded!")
+
+    client_date_exceptions = load_date_exclustions(client_date_exceptions_file)
+    print("Client date exemptions loaded!")
     
     # Load FW types
     client_fw_type_map = parse_client_firewall_types_from_csv(csv_path)
@@ -269,6 +278,11 @@ def check_ALL_fw_logging_levels(mode="all", specific_client=None):
                 logger.info(f"Skipping excluded folder: {client}\n")
                 file.write(f"\nSkipping excluded folder: {client}\n")
                 continue
+            
+            if client in client_date_exceptions:
+                folder_date = current_date
+            else:
+                folder_date = default_folder_date
             
             global folder_loc
             folder_loc = get_folder_loc(client_folder, folder_date)
