@@ -145,9 +145,9 @@ def get_db_path(folder_loc, mdb_file):
 
 def get_output_file(specific_client, timestamp, local_output_dir):
     if specific_client:
-        filename = f"FW_settings_script_{specific_client}_{timestamp}.txt"
+        filename = f"Logging Configurations Script_{specific_client}_{timestamp}.txt"
     else:
-        filename = f"FW_settings_script_all_{timestamp}.txt"
+        filename = f"Logging Configurations Script_(ALL CLIENTS)_{timestamp}.txt"
     return local_output_dir / filename
 
 def setup_logger(log_file_path):
@@ -403,16 +403,20 @@ def check_ALL_fw_logging_levels(mode="all", specific_client=None):
                             
                     # Write condition summary
                     if len(misconfigurations) == 0:
-                        status_line = f"{identifier_with_type}: Logging Configuration: Optimal!"
+                        status_line = f"{identifier_with_type}: Optimal!"
+                        file.write(status_line + "\n")
+                        print(status_line)
+                    elif len(misconfigurations) == 5:
+                        status_line = f"{identifier_with_type}: No Data! Outage or Failover?"
                         file.write(status_line + "\n")
                         print(status_line)
                     else:
-                        status_line = f"{identifier_with_type}: Logging Misconfigurations:"
+                        status_line = f"{identifier_with_type}:"
                         file.write(status_line + "\n")
                         print(status_line)
 
                         # Calculate alignment length based on the status line
-                        alignment_space = " " * (len(status_line) + 1)
+                        alignment_space = " " * 5
 
                         for mis in misconfigurations:
                             aligned_line = f"{alignment_space}{mis}"
@@ -438,9 +442,10 @@ def check_ALL_fw_logging_levels(mode="all", specific_client=None):
 
                     if custom_fw_ips:
                         formatted_ips = ", ".join(custom_fw_ips)
-                        file.write(f"    IPs in network: {formatted_ips}\n")
-                        print(f"    IPs in network: {formatted_ips}")
-                        logger.info(f"{identifier_with_type} IPs in network: {formatted_ips}")
+                        file.write(f"     IPs in network: {formatted_ips} (DO NOT INCLUDE IN CLIENT COMMUNICATIONS!)\n")
+                        
+                        print(f"     IPs in network: {formatted_ips} (DO NOT INCLUDE IN CLIENT COMMUNICATIONS!)")
+                        logger.info(f"{identifier_with_type} IPs in network: {formatted_ips} (DO NOT INCLUDE IN CLIENT COMMUNICATIONS!)")
 
                     cursor.close()
                     conn.close()
@@ -454,7 +459,8 @@ def check_ALL_fw_logging_levels(mode="all", specific_client=None):
 
             if not found_mdb_file:
                 logger.warning(f"No .mdb files found for {client}")
-                file.write(f"No .mdb files found!\n")
+                file.write(f"No .mdb files found for {client}!\n")
+                print(f"No .mdb files found for {client}!\n")
 
     logger.info("Script has finished running! All client folders have been processed.")
 
