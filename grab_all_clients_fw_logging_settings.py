@@ -19,9 +19,10 @@ import csv
 clients_folder = Path('D:/Clients')
 client_name_exceptions_file = Path('D:/Temp/Analysts/Julian/Script_Source/ClientExclusions.txt')
 local_output_dir = Path("D:/Temp/Analysts/Cam/Threat Engineering/FW Script Outputs")
-failover_data_file = Path("D:/Temp/Analysts/Cam/Threat Engineering/firewall_failovers.txt")
+failover_data_file = Path("D:/Temp/Analysts/Cam/Threat Engineering/FW Settings/chatfirewall_failovers.txt")
 csv_path = Path("D:/Documentation/Internal/ClientFirewallDetails.csv")
 client_date_exceptions_file = Path('D:/Temp/Analysts/Julian/Script_Source/ClientFolderDateExceptions.txt')
+client_fw_exceptions_file = Path('D:\Temp\Analysts\Cam\Threat Engineering\FW Settings\client_fw_exceptions.json')
 
 # ========================== VARIABLE CONFIG ==========================
 timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
@@ -135,7 +136,6 @@ def get_mode_selection():
                         continue
         else:
             print("Invalid mode. Please type 'all' or 'one'.")
-
 
 def get_folder_loc(client_folder, folder_date):
     return client_folder/"Source"/folder_date/input_folder
@@ -274,6 +274,8 @@ def check_ALL_fw_logging_levels(mode="all", specific_client=None):
             client = client_folder.name
             if specific_client and client != specific_client:
                 continue
+            
+            # Client exceptions loaded from source file (.txt)
             if client in client_name_exceptions:
                 logger.info(f"Skipping excluded folder: {client}\n")
                 file.write(f"\nSkipping excluded folder: {client}\n")
@@ -383,9 +385,9 @@ def check_ALL_fw_logging_levels(mode="all", specific_client=None):
                     if conditions_found:
                         found_conditions = [condition[0] for condition in conditions_found]
 
-                    if is_custom_fw == False:
-                        if check_debug_for_ip(folder_loc, firewall_identifier):
-                            found_conditions.append("Debug Events")
+                    # if is_custom_fw == False:
+                    #     if check_debug_for_ip(folder_loc, firewall_identifier):
+                    #         found_conditions.append("Debug Events")
 
                     # Step 2: Build state map and fill in expected keys
                     condition_states = {cond: True for cond in found_conditions}
